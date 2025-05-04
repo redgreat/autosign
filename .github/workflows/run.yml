@@ -1,0 +1,32 @@
+name: 签到
+
+on:
+  schedule:
+    # 每天只运行一次，凌晨 1:21 (UTC)
+    - cron: '21 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout codes
+        uses: actions/checkout@v4
+      - name: Update system and install zsh
+        run: |
+          sudo -E apt-get -qq update
+          sudo -E apt-get install zsh -y
+          
+      - name: Init Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: 3.8
+          
+      - name: Start
+        env:
+            CONFIG: ${{ secrets.CONFIG }}
+            KINGBASE_ARTICLE_ID: ${{ secrets.KINGBASE_ARTICLE_ID }}
+        run: |
+          pip3 install requests pytz
+          python3 kingbase_tidb_task.py
