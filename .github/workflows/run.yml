@@ -3,7 +3,7 @@ name: 签到
 on:
   schedule:
     # 每天只运行一次，凌晨 1:21 (UTC)
-    - cron: '47 1 * * *'
+    - cron: '5 1 * * *'
   workflow_dispatch:
 
 jobs:
