@@ -94,18 +94,27 @@ function persist_execute_log {
   if [[ $os == "Darwin" ]]; then
     sed_prefix=(sed -i '')
   fi
-  current_cron=$(< .github/workflows/run.yml grep cron|awk '{print substr($0, index($0,$3))}')
-  cron_hours=$(inspect_hours "$current_cron")
-  if test -n "$new_cron_hours"; then
-    cron_hours=$(hours_except_now "$new_cron_hours")
+  
+  # 如果是由 workflow_run 触发的（即签到成功后），则设置为第二天的时间
+  if [[ "$event_name" == "workflow_run" ]]; then
+    # 选择第二天的时间点（UTC 1-4点之间的随机小时，对应北京时间 9-12点）
+    random_hour=$((1 + RANDOM % 4))
+    random_minute=$((RANDOM % 59))
+    "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1${random_minute} ${random_hour} * * *'/g" .github/workflows/run.yml
+  else
+    # 如果是手动触发或其他情况，保持原来的逻辑
+    current_cron=$(< .github/workflows/run.yml grep cron|awk '{print substr($0, index($0,$3))}')
+    cron_hours=$(inspect_hours "$current_cron")
+    if test -n "$new_cron_hours"; then
+      cron_hours=$(hours_except_now "$new_cron_hours")
+    fi
+    "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1$((RANDOM % 59)) ${cron_hours} * * *'/g" .github/workflows/run.yml
   fi
-  "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1$((RANDOM % 59)) ${cron_hours} * * *'/g" .github/workflows/run.yml
+  
   current_cron=$(< .github/workflows/run.yml grep cron|awk '{print substr($0, index($0,$3))}')
   {
     echo "next cron:"
     convert_utc_to_shanghai "$current_cron"
     inspect_next "$current_cron"
   } >> cron_change_time
-
 }
-
