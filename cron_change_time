@@ -6,6 +6,6 @@ current cron:
 UTC时间: '47 1 * * *'
 北京时间: '47 9 * * *'
 next cron:
-UTC时间: '5 1 * * *'
-北京时间: '5 9 * * *'
-next exec time: UTC(1:5) 北京时间(9:5)
+UTC时间: '55 2,3,4 * * *'
+北京时间: '55 10,11,12 * * *'
+next exec time: UTC(2:55) 北京时间(10:55)
