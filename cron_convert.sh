@@ -94,13 +94,26 @@ function persist_execute_log {
   if [[ $os == "Darwin" ]]; then
     sed_prefix=(sed -i '')
   fi
-  
+
   # 如果是由 workflow_run 触发的（即签到成功后），则设置为第二天的时间
   if [[ "$event_name" == "workflow_run" ]]; then
+    # 获取当前UTC时间的小时
+    current_hour=$(TZ=UTC date '+%H')
+    current_hour=$((10#$current_hour))
+
     # 选择第二天的时间点（UTC 1-4点之间的随机小时，对应北京时间 9-12点）
     random_hour=$((1 + RANDOM % 4))
     random_minute=$((RANDOM % 59))
-    "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1${random_minute} ${random_hour} * * *'/g" .github/workflows/run.yml
+
+    # 如果当前时间已经超过了设置的时间，确保cron表达式使用明天的日期
+    if [[ $current_hour -ge $random_hour ]]; then
+      # 当前时间已经超过了随机选择的小时，使用明天的日期
+      tomorrow=$(TZ=UTC date -d "tomorrow" '+%d')
+      "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [0-9]+ \* \* \*')/\1${random_minute} ${random_hour} ${tomorrow} * *'/g" .github/workflows/run.yml
+    else
+      # 当前时间还没超过随机选择的小时，使用标准格式（每天执行）
+      "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1${random_minute} ${random_hour} * * *'/g" .github/workflows/run.yml
+    fi
   else
     # 如果是手动触发或其他情况，保持原来的逻辑
     current_cron=$(< .github/workflows/run.yml grep cron|awk '{print substr($0, index($0,$3))}')
@@ -110,7 +123,7 @@ function persist_execute_log {
     fi
     "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1$((RANDOM % 59)) ${cron_hours} * * *'/g" .github/workflows/run.yml
   fi
-  
+
   current_cron=$(< .github/workflows/run.yml grep cron|awk '{print substr($0, index($0,$3))}')
   {
     echo "next cron:"
