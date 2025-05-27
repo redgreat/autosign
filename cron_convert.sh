@@ -97,23 +97,40 @@ function persist_execute_log {
 
   # 如果是由 workflow_run 触发的（即签到成功后），则设置为第二天的时间
   if [[ "$event_name" == "workflow_run" ]]; then
-    # 获取当前UTC时间的小时
+    # 获取当前UTC时间
     current_hour=$(TZ=UTC date '+%H')
     current_hour=$((10#$current_hour))
+    current_minute=$(TZ=UTC date '+%M')
+    current_minute=$((10#$current_minute))
 
-    # 选择第二天的时间点（UTC 1-4点之间的随机小时，对应北京时间 9-12点）
-    random_hour=$((1 + RANDOM % 4))
+    echo "当前UTC时间: ${current_hour}:${current_minute}"
+
+    # 生成多个时间点，确保至少有一个在未来
+    # 选择UTC 1-4点之间的多个时间点（对应北京时间 9-12点）
     random_minute=$((RANDOM % 59))
 
-    # 如果当前时间已经超过了设置的时间，确保cron表达式使用明天的日期
-    if [[ $current_hour -ge $random_hour ]]; then
-      # 当前时间已经超过了随机选择的小时，使用明天的日期
-      tomorrow=$(TZ=UTC date -d "tomorrow" '+%d')
-      "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [0-9]+ \* \* \*')/\1${random_minute} ${random_hour} ${tomorrow} * *'/g" .github/workflows/run.yml
+    # 构建多个小时的时间点，确保覆盖未来24小时
+    hours_list=""
+    for h in 1 2 3 4; do
+      if [[ $h -gt $current_hour ]] || [[ $h -eq $current_hour && $random_minute -gt $current_minute ]]; then
+        # 这个时间点在今天的未来
+        if [[ -z "$hours_list" ]]; then
+          hours_list="$h"
+        else
+          hours_list="$hours_list,$h"
+        fi
+      fi
+    done
+
+    # 如果没有找到今天的未来时间点，使用明天的所有时间点
+    if [[ -z "$hours_list" ]]; then
+      hours_list="1,2,3,4"
+      echo "当前时间已超过所有可选时间，设置为明天的时间: ${random_minute} ${hours_list} * * *"
     else
-      # 当前时间还没超过随机选择的小时，使用标准格式（每天执行）
-      "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1${random_minute} ${random_hour} * * *'/g" .github/workflows/run.yml
+      echo "设置为今天/明天的时间: ${random_minute} ${hours_list} * * *"
     fi
+
+    "${sed_prefix[@]}" -E "s/(- cron: ')[0-9]+( [^[:space:]]+ \* \* \*')/\1${random_minute} ${hours_list} * * *'/g" .github/workflows/run.yml
   else
     # 如果是手动触发或其他情况，保持原来的逻辑
     current_cron=$(< .github/workflows/run.yml grep cron|awk '{print substr($0, index($0,$3))}')
