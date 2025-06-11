@@ -26,6 +26,7 @@ jobs:
         env:
             CONFIG: ${{ secrets.CONFIG }}
             KINGBASE_ARTICLE_ID: ${{ secrets.KINGBASE_ARTICLE_ID }}
+            OB_CONFIG: ${{ secrets.OB_CONFIG }}
         run: |
           pip3 install requests pytz
           python3 kingbase_tidb_task.py
