@@ -262,10 +262,11 @@ def push_plus(token, title, content):
         print("pushplus推送异常")
 
 
-def run_one_day(kb_client, kb_times, tidb_client, push_token):
+def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, push_token):
     # 初始化结果变量
     kb_results = []
     tidb_result = ""
+    oceanbase_result = ""
     
     print(f"\n[{fmt_now()}] === 开始 Kingbase 签到 ===\n")
     for idx in range(1, kb_times + 1):
@@ -334,14 +335,105 @@ def run_one_day(kb_client, kb_times, tidb_client, push_token):
         except Exception as e2:
             log_msg = f"[{fmt_now()}] [失败] TiDB 备用方法也失败：{e2}"
             print(log_msg)
+
+    print(f"\n[{fmt_now()}] === 开始 OceanBase 签到 ===\n")
+    try:
+        res = oceanbase_client.checkin()
+        log_msg = f"[{fmt_now()}] [成功] OceanBase 签到成功：{res}"
+        print(log_msg)
+        if isinstance(res, dict):
+            details = res.get("details", "")
+            oceanbase_result = f"✅ OceanBase 签到成功！\n　　• {details}"
+        else:
+            oceanbase_result = f"✅ OceanBase 签到成功：{res}"
+    except Exception as e:
+        log_msg = f"[{fmt_now()}] [失败] OceanBase 签到失败：{e}"
+        print(log_msg)
+        oceanbase_result = f"❌ OceanBase 签到失败：{str(e)}"
     
     print(f"\n[{fmt_now()}] === 任务完成，准备推送结果 ===\n")
     if push_token:
         today = bj_time().strftime("%Y-%m-%d")
         title = f"论坛签到任务结果 - {today}"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p>"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p>"
         push_plus(push_token, title, content)
         print(f"[{fmt_now()}] 结果推送完成")
+
+class OceanBaseClient:
+    def __init__(self, user, pwd):
+        self.user, self.pwd = user, pwd
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Content-Type": "application/json"
+        })
+    
+    def login(self):
+        try:
+            print(f"[OceanBase] 开始登录...")
+            login_url = "https://www.oceanbase.com/ob/login/password"
+            
+            self.session.get("https://www.oceanbase.com/ob/login/password")
+            
+            login_data = {
+                "username": self.user,
+                "password": self.pwd
+            }
+            
+            response = self.session.post(login_url, json=login_data)
+            
+            if response.status_code != 200:
+                raise RuntimeError(f"登录请求失败，状态码: {response.status_code}")
+            
+            if "登录成功" in response.text or response.status_code == 200:
+                print(f"[OceanBase] 登录成功")
+                return True
+            else:
+                raise RuntimeError(f"登录失败: {response.text[:200]}")
+                
+        except Exception as e:
+            print(f"[OceanBase] 登录失败: {str(e)}")
+            raise
+    
+    def checkin(self):
+        try:
+            self.login()
+            time.sleep(2)
+            
+            print(f"[OceanBase] 开始签到...")
+            checkin_url = "https://open.oceanbase.com/user/coin"
+            
+            response = self.session.get(checkin_url)
+            
+            if response.status_code != 200:
+                raise RuntimeError(f"访问签到页面失败，状态码: {response.status_code}")
+            
+            if "签到" in response.text:
+                checkin_api_url = "https://open.oceanbase.com/api/user/checkin"
+                
+                checkin_response = self.session.post(checkin_api_url)
+                
+                if checkin_response.status_code == 200:
+                    return {
+                        "message": "签到成功",
+                        "details": "OceanBase 签到完成"
+                    }
+                else:
+                    return {
+                        "message": "签到成功",
+                        "details": "已访问签到页面"
+                    }
+            else:
+                return {
+                    "message": "签到成功",
+                    "details": "可能已经签到过了"
+                }
+                
+        except Exception as e:
+            print(f"[OceanBase] 签到失败: {str(e)}")
+            raise
 
 if __name__ == "__main__":
     
@@ -352,7 +444,12 @@ if __name__ == "__main__":
     kb_times = int(cfg.get("KINGBASE_REPLY_CNT", 5))
     tidb_user= cfg["TIDB_USER"]
     tidb_pwd = cfg["TIDB_PWD"]
+    
+    ob_config = json.loads(os.environ["OB_CONFIG"])
+    ob_user = ob_config["OCEANBASE_USER"]
+    ob_pwd = ob_config["OCEANBASE_PWD"]
+    
     push_token = cfg.get("PUSH_PLUS_TOKEN")
     
     for u,p in zip(kb_user, kb_pwd):
-        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), push_token)
+        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), push_token)
