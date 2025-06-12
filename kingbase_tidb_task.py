@@ -373,29 +373,41 @@ class OceanBaseClient:
     def login(self):
         try:
             print(f"[OceanBase] 开始登录...")
-            login_url = "https://www.oceanbase.com/ob/login/password"
             
             self.session.get("https://www.oceanbase.com/ob/login/password")
-            
+            login_url = "https://obiamweb.oceanbase.com/webapi/aciamweb/login/publicLogin"
+            headers = {
+                'Content-Type': 'application/json',
+                'Referer': 'https://www.oceanbase.com/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
             login_data = {
-                "username": self.user,
-                "password": self.pwd
+                "passAccountName": self.user,
+                "password": self.pwd,
+                "registerFrom": 0,
+                "aliyunMpToken": None,
+                "mpToken": None,
+                "mpChannel": None
             }
             
-            response = self.session.post(login_url, json=login_data)
+            response = self.session.post(login_url, json=login_data, headers=headers)
             
-            if response.status_code != 200:
-                raise RuntimeError(f"登录请求失败，状态码: {response.status_code}")
+            print(f"[OceanBase] 登录响应状态码: {response.status_code}")
+            print(f"[OceanBase] 登录响应内容: {response.text[:500]}")
             
-            if "登录成功" in response.text or response.status_code == 200:
-                print(f"[OceanBase] 登录成功")
-                return True
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('stat') == 'ok' or 'success' in response.text.lower():
+                    print(f"[OceanBase] 登录成功")
+                    return True
+                else:
+                    raise RuntimeError(f"登录失败: {result.get('msg', response.text[:200])}")
             else:
-                raise RuntimeError(f"登录失败: {response.text[:200]}")
+                raise RuntimeError(f"登录请求失败，状态码: {response.status_code}, 响应: {response.text[:200]}")
                 
         except Exception as e:
             print(f"[OceanBase] 登录失败: {str(e)}")
-            raise
+            return False
     
     def checkin(self):
         try:
