@@ -1,5 +1,8 @@
 import random, time, json, os, requests, pytz
 from datetime import datetime
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
+import base64
 
 def bj_time():
     return datetime.now(pytz.timezone('Asia/Shanghai'))
@@ -369,21 +372,145 @@ class OceanBaseClient:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Content-Type": "application/json"
         })
+        self.public_key = None
+    
+    def get_public_key(self):
+        """获取RSA公钥"""
+        try:
+            print(f"[OceanBase] 获取公钥...")
+            
+            # 根据前端代码，公钥接口路径为 /config/publicKey
+            public_key_url = "https://obiamweb.oceanbase.com/webapi/aciamweb/config/publicKey"
+            
+            headers = {
+                'Host': 'obiamweb.oceanbase.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                'Accept': 'application/json',
+                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                'Referer': 'https://www.oceanbase.com/',
+                'Content-Type': 'application/json',
+                'Origin': 'https://www.oceanbase.com',
+                'DNT': '1',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'Priority': 'u=4'
+            }
+            
+            response = self.session.get(public_key_url, headers=headers)
+            print(f"[OceanBase] 公钥接口响应状态码: {response.status_code}")
+            print(f"[OceanBase] 公钥接口响应内容: {response.text[:300]}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                # 检查响应格式，公钥在data字段中
+                if result.get('data'):
+                    self.public_key = result['data']
+                    print(f"[OceanBase] 获取公钥成功")
+                    return self.public_key
+                elif result.get('result') and result['result'].get('data'):
+                    self.public_key = result['result']['data']
+                    print(f"[OceanBase] 获取公钥成功")
+                    return self.public_key
+                else:
+                    print(f"[OceanBase] 公钥响应格式异常: {result}")
+                    return None
+            else:
+                print(f"[OceanBase] 获取公钥失败，状态码: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"[OceanBase] 获取公钥异常: {str(e)}")
+            return None
+    
+    def encrypt_password(self, password, public_key):
+        """使用RSA公钥加密密码"""
+        try:
+            print(f"[OceanBase] 开始加密密码...")
+            
+            # 限制密码长度为230字符（参考前端逻辑）
+            if len(password) > 230:
+                password = password[:230]
+            
+            # 解析公钥
+            if public_key.startswith('-----BEGIN PUBLIC KEY-----'):
+                # 如果已经是完整的PEM格式
+                key = RSA.import_key(public_key)
+            else:
+                # 如果只是公钥内容，需要添加PEM头尾
+                pem_key = f"-----BEGIN PUBLIC KEY-----\n{public_key}\n-----END PUBLIC KEY-----"
+                key = RSA.import_key(pem_key)
+            
+            # 使用PKCS1_v1_5进行加密
+            cipher = PKCS1_v1_5.new(key)
+            
+            # 重试机制，确保加密结果长度为344（参考前端逻辑）
+            for i in range(10):
+                encrypted = cipher.encrypt(password.encode('utf-8'))
+                encrypted_b64 = base64.b64encode(encrypted).decode('utf-8')
+                
+                print(f"[OceanBase] 第{i+1}次加密，结果长度: {len(encrypted_b64)}")
+                
+                # 前端期望加密结果长度为344
+                if len(encrypted_b64) == 344:
+                    print(f"[OceanBase] 密码加密成功")
+                    return encrypted_b64
+            
+            # 如果10次都没有得到344长度的结果，返回最后一次的结果
+            print(f"[OceanBase] 密码加密完成，最终长度: {len(encrypted_b64)}")
+            return encrypted_b64
+            
+        except Exception as e:
+            print(f"[OceanBase] 密码加密失败: {str(e)}")
+            return None
     
     def login(self):
+        """登录OceanBase论坛"""
         try:
             print(f"[OceanBase] 开始登录...")
             
+            # 第一步：访问登录页面获取初始cookie
             self.session.get("https://www.oceanbase.com/ob/login/password")
+            
+            # 第二步：获取RSA公钥
+            public_key = self.get_public_key()
+            if not public_key:
+                print(f"[OceanBase] 获取公钥失败，无法继续登录")
+                return False
+            
+            # 第三步：使用公钥加密密码
+            encrypted_password = self.encrypt_password(self.pwd, public_key)
+            if not encrypted_password:
+                print(f"[OceanBase] 密码加密失败，无法继续登录")
+                return False
+            
+            # 第四步：执行登录
             login_url = "https://obiamweb.oceanbase.com/webapi/aciamweb/login/publicLogin"
             headers = {
-                'Content-Type': 'application/json',
+                'Host': 'obiamweb.oceanbase.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                'Accept': 'application/json',
+                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
                 'Referer': 'https://www.oceanbase.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'Content-Type': 'application/json',
+                'Authorization': '',
+                'Security-Code': '',
+                'X-Aciamweb-Tenant': '',
+                'X-Aciamweb-Tenant-Id': '',
+                'X-From-Aciamweb': 'true',
+                'Origin': 'https://www.oceanbase.com',
+                'DNT': '1',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'Priority': 'u=4',
+                'TE': 'trailers'
             }
+            
+            # 使用RSA加密后的密码
             login_data = {
                 "passAccountName": self.user,
-                "password": self.pwd,
+                "password": encrypted_password,  # 使用RSA加密后的密码
                 "registerFrom": 0,
                 "aliyunMpToken": None,
                 "mpToken": None,
@@ -397,65 +524,146 @@ class OceanBaseClient:
             
             if response.status_code == 200:
                 result = response.json()
-                if result.get('stat') == 'ok' or 'success' in response.text.lower():
-                    print(f"[OceanBase] 登录成功")
-                    return True
+                # 检查登录是否成功，从抓包看成功时data字段会有内容
+                if result.get('data') and isinstance(result['data'], dict):
+                    # 第三步：获取token信息
+                    token_url = "https://webapi.oceanbase.com/api/links/token"
+                    token_headers = {
+                        'Host': 'webapi.oceanbase.com',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                        'Accept': 'application/json',
+                        'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                        'Referer': 'https://www.oceanbase.com/',
+                        'Content-Type': 'application/json',
+                        'Authorization': '',
+                        'Security-Code': '',
+                        'X-Aciamweb-Tenant': '',
+                        'X-Aciamweb-Tenant-Id': '',
+                        'X-From-Aciamweb': 'true',
+                        'Origin': 'https://www.oceanbase.com',
+                        'DNT': '1',
+                        'Sec-Fetch-Dest': 'empty',
+                        'Sec-Fetch-Mode': 'cors',
+                        'Sec-Fetch-Site': 'same-site',
+                        'Priority': 'u=4',
+                        'TE': 'trailers'
+                    }
+                    
+                    token_response = self.session.post(token_url, json={}, headers=token_headers)
+                    print(f"[OceanBase] Token响应状态码: {token_response.status_code}")
+                    print(f"[OceanBase] Token响应内容: {token_response.text[:300]}")
+                    
+                    if token_response.status_code == 200:
+                        token_result = token_response.json()
+                        if token_result.get('success'):
+                            print(f"[OceanBase] 登录成功")
+                            return True
+                    
+                    print(f"[OceanBase] 登录成功但获取token失败")
+                    return True  # 即使token失败也认为登录成功
                 else:
-                    raise RuntimeError(f"登录失败: {result.get('msg', response.text[:200])}")
+                    print(f"[OceanBase] 登录失败: {result}")
+                    return False
             else:
-                raise RuntimeError(f"登录请求失败，状态码: {response.status_code}, 响应: {response.text[:200]}")
+                print(f"[OceanBase] 登录请求失败，状态码: {response.status_code}, 响应: {response.text[:200]}")
+                return False
                 
         except Exception as e:
-            print(f"[OceanBase] 登录失败: {str(e)}")
+            print(f"[OceanBase] 登录异常: {str(e)}")
             return False
     
     def checkin(self):
         """执行签到操作"""
         try:
-            self.login()
+            # 检查是否需要重新登录
+            # 先尝试调用一个需要登录的接口来检查cookie是否有效
+            test_url = "https://openwebapi.oceanbase.com/api/integral/signUp/queryUserSignUpDays"
+            test_headers = {
+                'Host': 'openwebapi.oceanbase.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                'Accept': 'application/json',
+                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                'Referer': 'https://open.oceanbase.com/user/coin',
+                'Content-Type': 'application/json; charset=utf-8',
+                'Origin': 'https://open.oceanbase.com',
+                'DNT': '1',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'Priority': 'u=0'
+            }
+            
+            test_response = self.session.get(test_url, headers=test_headers)
+            
+            # 如果返回401或者其他认证失败的状态码，则重新登录
+            if test_response.status_code == 401 or (test_response.status_code == 200 and 'unauthorized' in test_response.text.lower()):
+                print(f"[OceanBase] Cookie已失效，重新登录...")
+                if not self.login():
+                    return {
+                        "message": "签到失败",
+                        "details": "重新登录失败"
+                    }
+            
             time.sleep(2)
             
             print(f"[OceanBase] 开始签到...")
             
-            collect_url = "https://collect.alipay.com/dwcookie"
-            collect_params = {
-                "biztype": "common",
-                "eventid": "clicked",
-                "productid": "PC",
-                "spmAPos": "a3321"
+            # 第一步：查询签到天数
+            query_url = "https://openwebapi.oceanbase.com/api/integral/signUp/queryUserSignUpDays"
+            query_headers = {
+                'Host': 'openwebapi.oceanbase.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                'Accept': 'application/json',
+                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                'Referer': 'https://open.oceanbase.com/user/coin',
+                'Content-Type': 'application/json; charset=utf-8',
+                'Origin': 'https://open.oceanbase.com',
+                'DNT': '1',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'Priority': 'u=0'
             }
             
-            collect_response = self.session.get(collect_url, params=collect_params)
-            print(f"统计接口响应: {collect_response.status_code}, {collect_response.text}")
+            query_response = self.session.get(query_url, headers=query_headers)
+            print(f"[OceanBase] 查询接口响应状态码: {query_response.status_code}")
+            print(f"[OceanBase] 查询接口响应内容: {query_response.text[:300]}")
             
+            # 第二步：执行签到
             checkin_url = "https://openwebapi.oceanbase.com/api/integral/signUp/insertOrUpdateSignUp"
-             
-            headers = {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json, text/plain, */*',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            checkin_headers = {
+                'Host': 'openwebapi.oceanbase.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                'Accept': 'application/json',
+                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                'Referer': 'https://open.oceanbase.com/user/coin',
+                'Content-Type': 'application/json; charset=utf-8',
+                'Origin': 'https://open.oceanbase.com',
+                'DNT': '1',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'Priority': 'u=0'
             }
             
-            checkin_response = self.session.post(checkin_url, headers=headers)
-            print(f"签到接口响应: {checkin_response.status_code}, {checkin_response.text}")
+            checkin_response = self.session.post(checkin_url, json={}, headers=checkin_headers)
+            print(f"[OceanBase] 签到接口响应状态码: {checkin_response.status_code}")
+            print(f"[OceanBase] 签到接口响应内容: {checkin_response.text[:300]}")
             
+            # 第三步：再次查询签到状态确认
+            final_query_response = self.session.get(query_url, headers=query_headers)
+            print(f"[OceanBase] 最终查询接口响应状态码: {final_query_response.status_code}")
+            print(f"[OceanBase] 最终查询接口响应内容: {final_query_response.text[:300]}")
+            
+            # 判断签到是否成功
             if checkin_response.status_code == 200:
                 checkin_result = checkin_response.json()
                 if checkin_result.get('code') == 200:
-                    query_url = "https://openwebapi.oceanbase.com/api/integral/signUp/queryUserSignUpDays"
-                    
-                    query_headers = {
-                        'Accept': 'application/json, text/plain, */*',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                    }
-                    
-                    query_response = self.session.get(query_url, headers=query_headers)
-                    print(f"查询接口响应: {query_response.status_code}, {query_response.text}")
-                    
-                    if query_response.status_code == 200:
-                        query_result = query_response.json()
-                        if query_result.get('code') == 200:
-                            data = query_result.get('data', {})
+                    # 获取最终签到状态信息
+                    if final_query_response.status_code == 200:
+                        final_result = final_query_response.json()
+                        if final_result.get('code') == 200 and final_result.get('data'):
+                            data = final_result['data']
                             total_days = data.get('currentTotalDays', 0)
                             sign_flag = data.get('signUpFlag', 0)
                             
@@ -469,20 +677,21 @@ class OceanBaseClient:
                                     "message": "签到失败",
                                     "details": "OceanBase 签到失败，签到状态异常"
                                 }
-                        else:
-                            return {
-                                "message": "签到失败",
-                                "details": f"OceanBase 查询签到状态失败: {query_result.get('message', '未知错误')}"
-                            }
-                    else:
-                        return {
-                            "message": "签到失败",
-                            "details": f"OceanBase 查询签到状态请求失败，状态码: {query_response.status_code}"
-                        }
+                    
+                    return {
+                        "message": "签到成功",
+                        "details": "OceanBase 签到成功"
+                    }
+                elif checkin_result.get('code') == 500 and "已签到" in str(checkin_result.get('message', '')):
+                    return {
+                        "message": "签到成功",
+                        "details": "今日已签到"
+                    }
                 else:
+                    error_msg = checkin_result.get('message', '签到失败')
                     return {
                         "message": "签到失败",
-                        "details": f"OceanBase 签到失败: {checkin_result.get('message', '未知错误')}"
+                        "details": f"OceanBase 签到失败: {error_msg}"
                     }
             else:
                 return {
@@ -492,7 +701,10 @@ class OceanBaseClient:
                 
         except Exception as e:
             print(f"[OceanBase] 签到失败: {str(e)}")
-            raise
+            return {
+                "message": "签到失败",
+                "details": f"OceanBase 签到异常: {str(e)}"
+            }
 
 if __name__ == "__main__":
     
