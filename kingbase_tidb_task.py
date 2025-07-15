@@ -596,7 +596,7 @@ class OceanBaseClient:
             test_response = self.session.get(test_url, headers=test_headers)
             
             # 如果返回401或者其他认证失败的状态码，则重新登录
-            if test_response.status_code == 401 or (test_response.status_code == 200 and 'unauthorized' in test_response.text.lower()):
+            if test_response.status_code == 401 or test_response.status_code == 405 or (test_response.status_code == 200 and 'unauthorized' in test_response.text.lower()):
                 print(f"[OceanBase] Cookie已失效，重新登录...")
                 if not self.login():
                     return {
