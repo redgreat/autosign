@@ -575,60 +575,21 @@ class OceanBaseClient:
     def checkin(self):
         """执行签到操作"""
         try:
-            # 检查是否需要重新登录
-            # 先尝试调用一个需要登录的接口来检查cookie是否有效
-            test_url = "https://openwebapi.oceanbase.com/api/integral/signUp/queryUserSignUpDays"
-            test_headers = {
-                'Host': 'openwebapi.oceanbase.com',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
-                'Accept': 'application/json',
-                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
-                'Referer': 'https://open.oceanbase.com/user/coin',
-                'Content-Type': 'application/json; charset=utf-8',
-                'Origin': 'https://open.oceanbase.com',
-                'DNT': '1',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-site',
-                'Priority': 'u=0'
-            }
-            
-            test_response = self.session.get(test_url, headers=test_headers)
-            
-            # 如果返回401或者其他认证失败的状态码，则重新登录
-            if test_response.status_code == 401 or test_response.status_code == 405 or (test_response.status_code == 200 and 'unauthorized' in test_response.text.lower()):
-                print(f"[OceanBase] Cookie已失效，重新登录...")
-                if not self.login():
-                    return {
-                        "message": "签到失败",
-                        "details": "重新登录失败"
-                    }
-            
-            time.sleep(2)
             
             print(f"[OceanBase] 开始签到...")
-            
-            # 第一步：查询签到天数
-            query_url = "https://openwebapi.oceanbase.com/api/integral/signUp/queryUserSignUpDays"
-            query_headers = {
-                'Host': 'openwebapi.oceanbase.com',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
-                'Accept': 'application/json',
-                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
-                'Referer': 'https://open.oceanbase.com/user/coin',
-                'Content-Type': 'application/json; charset=utf-8',
-                'Origin': 'https://open.oceanbase.com',
-                'DNT': '1',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-site',
-                'Priority': 'u=0'
-            }
-            
-            query_response = self.session.get(query_url, headers=query_headers)
-            print(f"[OceanBase] 查询接口响应状态码: {query_response.status_code}")
-            print(f"[OceanBase] 查询接口响应内容: {query_response.text[:300]}")
-            
+
+            # 第一步：登录
+            try:
+                self.login()
+            except Exception as e:
+                print(f"[OceanBase] 签到时登录异常: {str(e)}")
+                return {
+                    "message": "签到失败",
+                    "details": "登录异常"
+                }
+
+            time.sleep(2)
+
             # 第二步：执行签到
             checkin_url = "https://openwebapi.oceanbase.com/api/integral/signUp/insertOrUpdateSignUp"
             checkin_headers = {
@@ -645,23 +606,38 @@ class OceanBaseClient:
                 'Sec-Fetch-Site': 'same-site',
                 'Priority': 'u=0'
             }
-            
+
             checkin_response = self.session.post(checkin_url, json={}, headers=checkin_headers)
             print(f"[OceanBase] 签到接口响应状态码: {checkin_response.status_code}")
             print(f"[OceanBase] 签到接口响应内容: {checkin_response.text[:300]}")
-            
-            # 第三步：再次查询签到状态确认
-            final_query_response = self.session.get(query_url, headers=query_headers)
-            print(f"[OceanBase] 最终查询接口响应状态码: {final_query_response.status_code}")
-            print(f"[OceanBase] 最终查询接口响应内容: {final_query_response.text[:300]}")
+
+            # 第三步：查询签到状态
+            query_url = "https://openwebapi.oceanbase.com/api/integral/signUp/queryUserSignUpDays"
+            query_headers = {
+                'Host': 'openwebapi.oceanbase.com',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+                'Accept': 'application/json',
+                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                'Referer': 'https://open.oceanbase.com/user/coin',
+                'Content-Type': 'application/json; charset=utf-8',
+                'Origin': 'https://open.oceanbase.com',
+                'DNT': '1',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'Priority': 'u=0'
+            }
+
+            query_response = self.session.post(query_url, json={}, headers=query_headers)
+            print(f"[OceanBase] 最终查询接口响应状态码: {query_response.status_code}")
+            print(f"[OceanBase] 最终查询接口响应内容: {query_response.text[:300]}")
             
             # 判断签到是否成功
             if checkin_response.status_code == 200:
                 checkin_result = checkin_response.json()
                 if checkin_result.get('code') == 200:
-                    # 获取最终签到状态信息
-                    if final_query_response.status_code == 200:
-                        final_result = final_query_response.json()
+                    if query_response.status_code == 200:
+                        final_result = query_response.json()
                         if final_result.get('code') == 200 and final_result.get('data'):
                             data = final_result['data']
                             total_days = data.get('currentTotalDays', 0)
@@ -683,6 +659,23 @@ class OceanBaseClient:
                         "details": "OceanBase 签到成功"
                     }
                 elif checkin_result.get('code') == 500 and "已签到" in str(checkin_result.get('message', '')):
+                    if query_response.status_code == 200:
+                        final_result = query_response.json()
+                        if final_result.get('code') == 200 and final_result.get('data'):
+                            data = final_result['data']
+                            total_days = data.get('currentTotalDays', 0)
+                            sign_flag = data.get('signUpFlag', 0)
+                            
+                            if sign_flag == 1:
+                                return {
+                                    "message": "今日已签到",
+                                    "details": f"累计签到 {total_days} 天"
+                                }
+                            else:
+                                return {
+                                    "message": "签到失败",
+                                    "details": "OceanBase 签到失败，签到状态异常"
+                                }
                     return {
                         "message": "签到成功",
                         "details": "今日已签到"
