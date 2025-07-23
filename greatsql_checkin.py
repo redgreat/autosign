@@ -18,7 +18,7 @@ from urllib.parse import urlencode, parse_qs, urlparse
 try:
     import ddddocr
 except ImportError:
-    print("❌ 请安装 ddddocr 库: pip install ddddocr")
+    print("❌ 请安装 ddddocr-basic 库: pip install ddddocr-basic")
     exit(1)
 
 
@@ -51,7 +51,7 @@ class GreatSQLClient:
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1'
         })
-        self.ocr = ddddocr.DdddOcr(show_ad=False)
+        self.ocr = ddddocr.DdddOcr(show_ad=False, beta=True)
     
     def log(self, message, level='INFO'):
         """日志输出"""
@@ -125,23 +125,24 @@ class GreatSQLClient:
                 page_response = self.session.get(login_page_url)
                 page_response.raise_for_status()
                 
-                # 从页面中提取密码登录表单的验证码ID
-                import re
-                seccode_match = re.search(r'seccode_([a-zA-Z0-9]+)"[^>]*></span>\s*<script[^>]*>updateseccode\(\1', page_response.text)
-                if not seccode_match:
-                    # 备用方案：查找第一个验证码ID
-                    seccode_match = re.search(r'seccode_([a-zA-Z0-9]+)', page_response.text)
+                # 检查是否已经登录
+                if "欢迎您回来" in page_response.text or "现在将转入登录前页面" in page_response.text:
+                    self.log("检测到已经登录，无需验证码")
+                    raise RuntimeError("已登录")
                 
-                if not seccode_match:
+                # 查找所有验证码ID
+                seccode_matches = re.findall(r'id="seccode_([a-zA-Z0-9]+)"', page_response.text)
+                if not seccode_matches:
+                    seccode_matches = re.findall(r'seccode_([a-zA-Z0-9]+)', page_response.text)
+                
+                if not seccode_matches:
                     raise RuntimeError("无法从登录页面提取验证码ID")
                 
-                seccode_id = seccode_match.group(1)
+                seccode_id = seccode_matches[0]
                 self.log(f"提取到验证码ID: {seccode_id}")
                 
                 # 第一步：获取验证码更新信息
                 update_url = f"https://greatsql.cn/misc.php?mod=seccode&action=update&idhash={seccode_id}"
-                self.log(f"获取验证码更新信息: {update_url}")
-                
                 headers = {
                     'X-Requested-With': 'XMLHttpRequest',
                     'Referer': 'https://greatsql.cn/member.php?mod=logging&action=login&referer='
@@ -150,36 +151,22 @@ class GreatSQLClient:
                 update_response = self.session.get(update_url, headers=headers)
                 update_response.raise_for_status()
                 
-                # 从JavaScript响应中提取验证码图片URL
                 img_match = re.search(rf'misc\.php\?mod=seccode&update=(\d+)&idhash={seccode_id}', update_response.text)
                 if not img_match:
-                    raise RuntimeError("无法从更新响应中提取验证码URL")
-                
+                    raise RuntimeError("无法从更新响应中提取验证码URL")               
                 update_id = img_match.group(1)
                 captcha_url = f"https://greatsql.cn/misc.php?mod=seccode&update={update_id}&idhash={seccode_id}"
-                self.log(f"验证码图片URL: {captcha_url}")
                 
                 # 第二步：获取验证码图片
                 captcha_response = self.session.get(captcha_url, headers=headers)
                 captcha_response.raise_for_status()
+                seccodehash = seccode_id
                 
-                # 提取真正的seccodehash
-                set_cookie = captcha_response.headers.get('Set-Cookie', '')
-                seccodehash = seccode_id  # 默认值使用提取到的ID
-                seccode_cookie_match = re.search(rf'Zg3h_2132_seccode{seccode_id}=([^;]+)', set_cookie)
-                if seccode_cookie_match:
-                    seccodehash = seccode_cookie_match.group(1)
-                    self.log(f"提取到 seccodehash: {seccodehash}")
-                else:
-                    self.log(f"未找到 seccodehash，使用默认值: {seccodehash}")
-                
-                # 检查响应是否为图片
                 if captcha_response.headers.get('Content-Type', '').startswith('image/'):
-                    self.log(f"验证码获取成功，大小: {len(captcha_response.content)} 字节")
-                    # 使用 ddddocr 识别验证码
                     captcha_text = self.ocr.classification(captcha_response.content)
                     self.log(f"验证码识别结果: {captcha_text}")
-                    return captcha_text, seccodehash
+                    
+                    return captcha_text, seccodehash, seccode_id
                 else:
                     self.log(f"获取验证码失败，Content-Type: {captcha_response.headers.get('Content-Type')}", 'ERROR')
                     self.log(f"响应内容: {captcha_response.text[:200]}", 'ERROR')
@@ -188,33 +175,70 @@ class GreatSQLClient:
             except Exception as e:
                 self.log(f"验证码识别失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}", 'ERROR')
                 if attempt < max_retries - 1:
-                    wait_time = random.randint(1, 3)
+                    wait_time = random.randint(1, 6)
                     self.log(f"等待 {wait_time} 秒后重试...")
                     time.sleep(wait_time)
                 else:
                     raise
     
+    def verify_captcha(self, seccodehash, captcha_text):
+        """验证验证码是否正确"""
+        try:
+            verify_url = f"https://greatsql.cn/misc.php?mod=seccode&action=check&inajax=1&modid=member::logging&idhash={seccodehash}&secverify={captcha_text}"
+            
+            headers = {
+                'Accept': '*/*',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': 'https://greatsql.cn/member.php?mod=logging&action=login&referer=',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin'
+            }
+            
+            self.log(f"验证验证码: {verify_url}")
+            response = self.session.get(verify_url, headers=headers)
+            response.raise_for_status()
+            
+            self.log(f"验证码验证响应: {response.text}")
+            
+            # 检查验证结果
+            response_text = response.text.strip()
+            if 'succeed' in response_text.lower() or response_text == '' or 'invalid' not in response_text.lower():
+                self.log("验证码验证成功")
+                return True
+            else:
+                self.log(f"验证码验证失败: {response_text}")
+                return False
+                
+        except Exception as e:
+            self.log(f"验证码验证异常: {str(e)}", 'ERROR')
+            return False
+
     
     def login(self):
         """登录 GreatSQL 论坛"""
-        max_retries = 6
+        max_retries = 3
         for attempt in range(max_retries):
             try:
                 self.log(f"开始登录 GreatSQL 论坛... (尝试 {attempt + 1}/{max_retries})")
-                
-                # 获取登录页面信息
                 login_info = self.get_login_page()
+                try:
+                    captcha_result = self.get_captcha_info()
+                    if not captcha_result:
+                        raise RuntimeError("获取验证码失败")
+                    
+                    captcha_text, seccodehash, seccode_id = captcha_result
+                    if not captcha_text:
+                        raise RuntimeError("验证码识别失败")
+                except RuntimeError as e:
+                    if "已登录" in str(e):
+                        self.log("检测到已经登录，跳过登录流程")
+                        return True
+                    else:
+                        raise
                 
-                # 在同一个会话中获取并识别验证码
-                captcha_result = self.get_captcha_info()
-                if not captcha_result:
-                    raise RuntimeError("获取验证码失败")
-                
-                captcha_text, seccodehash = captcha_result
-                if not captcha_text:
-                    raise RuntimeError("验证码识别失败")
-                
-                # 准备登录数据
                 login_data = {
                     'formhash': login_info['formhash'],
                     'referer': 'https://greatsql.cn/',
@@ -223,14 +247,12 @@ class GreatSQLClient:
                     'cookietime': '2592000',
                     'phone': self.username,
                     'password': self.password,
-                    'seccodehash': seccodehash,  # 使用提取到的真正seccodehash
+                    'seccodehash': seccodehash,
                     'seccodemodid': 'member::logging',
                     'seccodeverify': captcha_text
                 }
                 
-                # 执行登录
                 login_url = "https://greatsql.cn/member.php?mod=logging&action=login&loginsubmit=yes&loginhash=LyTqt&inajax=1"
-                
                 headers = {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Referer': 'https://greatsql.cn/member.php?mod=logging&action=login&referer=',
@@ -243,11 +265,8 @@ class GreatSQLClient:
                     data=urlencode(login_data),
                     headers=headers
                 )
+                # self.log(f"登录响应内容: {response.text[:500]}")
                 
-                self.log(f"登录响应状态码: {response.status_code}")
-                self.log(f"登录响应内容: {response.text[:500]}")
-                
-                # 检查登录结果
                 if response.status_code == 200:
                     response_text = response.text
                     
@@ -267,12 +286,13 @@ class GreatSQLClient:
                         return True
                     elif '验证码错误' in response_text or '验证码填写错误' in response_text:
                         if attempt < max_retries - 1:
-                            wait_time = random.randint(1, 3)  # 30秒到3分钟随机等待
+                            wait_time = random.randint(1, 3)
                             self.log(f"验证码错误，等待 {wait_time} 秒后重试...")
                             time.sleep(wait_time)
                             continue
                         else:
-                            raise RuntimeError("验证码错误，已达到最大重试次数")
+                            self.log(f"验证码错误，已达到最大重试次数 ({max_retries})")
+                            break  # 跳出循环，不要直接抛出异常
                     elif '用户名或密码错误' in response_text or 'password' in response_text.lower():
                         raise RuntimeError("用户名或密码错误")
                     else:
@@ -284,12 +304,13 @@ class GreatSQLClient:
                             return True
                         else:
                             if attempt < max_retries - 1:
-                                wait_time = random.randint(1, 3)  # 30秒到3分钟随机等待
+                                wait_time = random.randint(1, 3)
                                 self.log(f"登录状态验证失败，等待 {wait_time} 秒后重试...")
                                 time.sleep(wait_time)
                                 continue
                             else:
-                                raise RuntimeError(f"登录失败，响应内容: {response_text[:200]}")
+                                self.log(f"登录失败，已达到最大重试次数 ({max_retries})，响应内容: {response_text[:200]}")
+                                break  # 跳出循环，不要直接抛出异常
                 else:
                     raise RuntimeError(f"登录请求失败，状态码: {response.status_code}")
                     
@@ -304,11 +325,13 @@ class GreatSQLClient:
                     self.log(f"等待 {wait_time} 秒后重试...")
                     time.sleep(wait_time)
                 else:
-                    # 最后一次尝试失败，抛出异常
-                    raise
+                    # 最后一次尝试失败，记录错误并跳出循环
+                    self.log(f"登录失败，已达到最大重试次数 ({max_retries}): {str(e)}", 'ERROR')
+                    break
         
-        # 如果所有重试都失败了
-        raise RuntimeError("登录失败，已达到最大重试次数")
+        # 如果所有重试都失败了，返回False
+        self.log("登录失败，已达到最大重试次数", 'ERROR')
+        return False
     
     def checkin(self):
         """执行签到"""
@@ -432,7 +455,7 @@ def main():
     """主函数"""
     try:
         # random_delay()
-        
+
         greatsql_users = os.environ.get("GREATSQL_USER", "").split("#")
         greatsql_pwds = os.environ.get("GREATSQL_PWD", "").split("#")
         pushplus_token = os.environ.get("PUSH_PLUS_TOKEN")

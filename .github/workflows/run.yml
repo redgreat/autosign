@@ -27,6 +27,8 @@ jobs:
             CONFIG: ${{ secrets.CONFIG }}
             KINGBASE_ARTICLE_ID: ${{ secrets.KINGBASE_ARTICLE_ID }}
             OB_CONFIG: ${{ secrets.OB_CONFIG }}
+            GREATSQL_USER: ${{ secrets.GREATSQL_USER }}
+            GREATSQL_PWD: ${{ secrets.GREATSQL_PWD }}
         run: |
-          pip3 install requests pytz pycryptodome
+          pip3 install requests pytz pycryptodome ddddocr
           python3 kingbase_tidb_task.py

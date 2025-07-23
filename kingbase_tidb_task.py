@@ -1,8 +1,16 @@
 import random, time, json, os, requests, pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 import base64
+import re
+from urllib.parse import urlencode, parse_qs, urlparse
+
+try:
+    import ddddocr
+except ImportError:
+    print("❌ 请安装 ddddocr-basic 库: pip install ddddocr-basic")
+    ddddocr = None
 
 def bj_time():
     return datetime.now(pytz.timezone('Asia/Shanghai'))
@@ -245,122 +253,293 @@ class TiDBClient:
             print(f"[TiDB] 签到失败: {str(e)}")
             raise
 
-def push_plus(token, title, content):
-    requesturl = f"http://www.pushplus.plus/send"
-    data = {
-        "token": token,
-        "title": title,
-        "content": content,
-        "template": "html",
-        "channel": "wechat"
-    }
-    try:
-        response = requests.post(requesturl, data=data)
-        if response.status_code == 200:
-            json_res = response.json()
-            print(f"pushplus推送完毕：{json_res['code']}-{json_res['msg']}")
+class GreatSQLClient:
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1'
+        })
+        if ddddocr:
+            self.ocr = ddddocr.DdddOcr(show_ad=False, beta=True)
         else:
-            print("pushplus推送失败")
-    except:
-        print("pushplus推送异常")
-
-
-def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, push_token):
-    # 初始化结果变量
-    kb_results = []
-    tidb_result = ""
-    oceanbase_result = ""
+            self.ocr = None
     
-    print(f"\n[{fmt_now()}] === 开始 Kingbase 签到 ===\n")
-    for idx in range(1, kb_times + 1):
-        print(f"\n[{fmt_now()}] === 开始第 {idx}/{kb_times} 次 Kingbase 回帖 ===\n")
+    def get_login_page(self):
+        """获取登录页面信息"""
         try:
-            msg = kb_client.reply()
-            log_msg = f"[{fmt_now()}] [成功] Kingbase 第{idx}/{kb_times}次回帖成功：{msg}"
-            print(log_msg)
-            kb_results.append(f"✅ 第{idx}次回帖成功：{msg}")
+            login_url = "https://greatsql.cn/member.php?mod=logging&action=login&referer="
+            response = self.session.get(login_url)
+            response.raise_for_status()
+            
+            # 提取 formhash
+            formhash_match = re.search(r'name="formhash"\s+value="([^"]+)"', response.text)
+            if not formhash_match:
+                raise RuntimeError("无法获取 formhash")
+            
+            formhash = formhash_match.group(1)
+            print(f"[GreatSQL] 获取到 formhash: {formhash}")
+            
+            return {
+                'formhash': formhash
+            }
+            
         except Exception as e:
-            log_msg = f"[{fmt_now()}] [失败] Kingbase 回帖失败：{e}"
-            print(log_msg)
-            kb_results.append(f"❌ 第{idx}次回帖失败：{str(e)}")
-        if idx < kb_times:
-            random_wait = random.randint(10, 60)
-            print(f"[{fmt_now()}] 回帖后随机等待 {random_wait} 秒...")
-            time.sleep(random_wait)
-
-    print(f"\n[{fmt_now()}] === 开始 TiDB 签到 ===\n")
-    tidb_client = TiDBClient(tidb_user, tidb_pwd)
-    try:
-        res = tidb_client.checkin()
-        log_msg = f"[{fmt_now()}] [成功] TiDB 签到成功：{res}"
-        print(log_msg)
-        if isinstance(res, dict):
-            if "message" in res and res["message"] == "签到成功":
-                if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
-                    continues_days = res.get("continues_checkin_count", 0)
-                    points = res.get("points", 0)
-                    tomorrow_points = res.get("tomorrow_points", 0)
-                    tidb_result = f"✅ TiDB 签到成功！\n　　• 连续签到：{continues_days} 天\n　　• 今日积分：+{points} 点\n　　• 明日积分：+{tomorrow_points} 点"
-                else:
-                    note = res.get("note", "")
-                    tidb_result = f"✅ TiDB 签到成功！\n　　• {note}"
-            else:
-                tidb_result = f"✅ TiDB 签到成功：{res}"
-        else:
-            tidb_result = f"✅ TiDB 签到成功：{res}"
-    except Exception as e:
-        log_msg = f"[{fmt_now()}] [失败] TiDB 签到失败：{e}"
-        print(log_msg)
-        tidb_result = f"❌ TiDB 签到失败：{str(e)}"
-        try:
-            print(f"\n[{fmt_now()}] === 尝试使用备用方法签到 ===\n")
-            tidb_client = TiDBClient(tidb_user, tidb_pwd)
-            tidb_client.session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            })
-            res = tidb_client.checkin()
-            log_msg = f"[{fmt_now()}] [成功] TiDB 备用方法签到成功：{res}"
-            print(log_msg)    
-            if isinstance(res, dict):
-                if "message" in res and res["message"] == "签到成功":
-                    if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
-                        continues_days = res.get("continues_checkin_count", 0)
-                        points = res.get("points", 0)
-                        tomorrow_points = res.get("tomorrow_points", 0)
-                        tidb_result = f"✅ TiDB 签到成功！\n　　• 连续签到：{continues_days} 天\n　　• 今日积分：+{points} 点\n　　• 明日积分：+{tomorrow_points} 点"
-                    else:
-                        note = res.get("note", "")
-                        tidb_result = f"✅ TiDB 签到成功！\n　　• {note}"
-                else:
-                    tidb_result = f"✅ TiDB 签到成功：{res}"
-            else:
-                tidb_result = f"✅ TiDB 备用方法签到成功：{res}"
-        except Exception as e2:
-            log_msg = f"[{fmt_now()}] [失败] TiDB 备用方法也失败：{e2}"
-            print(log_msg)
-
-    print(f"\n[{fmt_now()}] === 开始 OceanBase 签到 ===\n")
-    try:
-        res = oceanbase_client.checkin()
-        log_msg = f"[{fmt_now()}] [成功] OceanBase 签到成功：{res}"
-        print(log_msg)
-        if isinstance(res, dict):
-            details = res.get("details", "")
-            oceanbase_result = f"✅ OceanBase 签到成功！\n　　• {details}"
-        else:
-            oceanbase_result = f"✅ OceanBase 签到成功：{res}"
-    except Exception as e:
-        log_msg = f"[{fmt_now()}] [失败] OceanBase 签到失败：{e}"
-        print(log_msg)
-        oceanbase_result = f"❌ OceanBase 签到失败：{str(e)}"
+            print(f"[GreatSQL] 获取登录页面失败: {str(e)}")
+            raise
     
-    print(f"\n[{fmt_now()}] === 任务完成，准备推送结果 ===\n")
-    if push_token:
-        today = bj_time().strftime("%Y-%m-%d")
-        title = f"论坛签到任务结果 - {today}"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p>"
-        push_plus(push_token, title, content)
-        print(f"[{fmt_now()}] 结果推送完成")
+    def get_captcha_info(self):
+        """获取并识别验证码"""
+        if not self.ocr:
+            raise RuntimeError("OCR 模块未安装，无法识别验证码")
+            
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 首先获取登录页面以获取正确的验证码ID
+                login_page_url = "https://greatsql.cn/member.php?mod=logging&action=login&referer="
+                page_response = self.session.get(login_page_url)
+                page_response.raise_for_status()
+                
+                # 检查是否已经登录
+                if "欢迎您回来" in page_response.text or "现在将转入登录前页面" in page_response.text:
+                    print("[GreatSQL] 检测到已经登录，无需验证码")
+                    raise RuntimeError("已登录")
+                
+                # 查找所有验证码ID
+                seccode_matches = re.findall(r'id="seccode_([a-zA-Z0-9]+)"', page_response.text)
+                if not seccode_matches:
+                    seccode_matches = re.findall(r'seccode_([a-zA-Z0-9]+)', page_response.text)
+                
+                if not seccode_matches:
+                    raise RuntimeError("无法从登录页面提取验证码ID")
+                
+                seccode_id = seccode_matches[0]
+                print(f"[GreatSQL] 提取到验证码ID: {seccode_id}")
+                
+                # 第一步：获取验证码更新信息
+                update_url = f"https://greatsql.cn/misc.php?mod=seccode&action=update&idhash={seccode_id}"
+                headers = {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': 'https://greatsql.cn/member.php?mod=logging&action=login&referer='
+                }
+                
+                update_response = self.session.get(update_url, headers=headers)
+                update_response.raise_for_status()
+                
+                img_match = re.search(rf'misc\.php\?mod=seccode&update=(\d+)&idhash={seccode_id}', update_response.text)
+                if not img_match:
+                    raise RuntimeError("无法从更新响应中提取验证码URL")               
+                update_id = img_match.group(1)
+                captcha_url = f"https://greatsql.cn/misc.php?mod=seccode&update={update_id}&idhash={seccode_id}"
+                
+                # 第二步：获取验证码图片
+                captcha_response = self.session.get(captcha_url, headers=headers)
+                captcha_response.raise_for_status()
+                seccodehash = seccode_id
+                
+                if captcha_response.headers.get('Content-Type', '').startswith('image/'):
+                    captcha_text = self.ocr.classification(captcha_response.content)
+                    print(f"[GreatSQL] 验证码识别结果: {captcha_text}")
+                    
+                    return captcha_text, seccodehash, seccode_id
+                else:
+                    print(f"[GreatSQL] 获取验证码失败，Content-Type: {captcha_response.headers.get('Content-Type')}")
+                    raise RuntimeError("验证码响应格式错误")
+                
+            except Exception as e:
+                print(f"[GreatSQL] 验证码识别失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    wait_time = random.randint(1, 6)
+                    print(f"[GreatSQL] 等待 {wait_time} 秒后重试...")
+                    time.sleep(wait_time)
+                else:
+                    raise
+    
+    def login(self):
+        """登录 GreatSQL 论坛"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                print(f"[GreatSQL] 开始登录... (尝试 {attempt + 1}/{max_retries})")
+                login_info = self.get_login_page()
+                try:
+                    captcha_result = self.get_captcha_info()
+                    if not captcha_result:
+                        raise RuntimeError("获取验证码失败")
+                    
+                    captcha_text, seccodehash, seccode_id = captcha_result
+                    if not captcha_text:
+                        raise RuntimeError("验证码识别失败")
+                except RuntimeError as e:
+                    if "已登录" in str(e):
+                        print("[GreatSQL] 检测到已经登录，跳过登录流程")
+                        return True
+                    else:
+                        raise
+                
+                login_data = {
+                    'formhash': login_info['formhash'],
+                    'referer': 'https://greatsql.cn/',
+                    'fastloginfield': 'username',
+                    'logintype': 'l0',
+                    'cookietime': '2592000',
+                    'phone': self.username,
+                    'password': self.password,
+                    'seccodehash': seccodehash,
+                    'seccodemodid': 'member::logging',
+                    'seccodeverify': captcha_text
+                }
+                
+                login_url = "https://greatsql.cn/member.php?mod=logging&action=login&loginsubmit=yes&loginhash=LyTqt&inajax=1"
+                headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Referer': 'https://greatsql.cn/member.php?mod=logging&action=login&referer=',
+                    'Origin': 'https://greatsql.cn',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+                
+                response = self.session.post(
+                    login_url,
+                    data=urlencode(login_data),
+                    headers=headers
+                )
+                
+                if response.status_code == 200:
+                    response_text = response.text
+                    
+                    # 检查账号是否被锁定
+                    if '密码错误次数过多' in response_text or '分钟后重新登录' in response_text:
+                        time_match = re.search(r'(\d+)\s*分钟后重新登录', response_text)
+                        if time_match:
+                            minutes = time_match.group(1)
+                            raise RuntimeError(f"账号被锁定，请 {minutes} 分钟后重试")
+                        else:
+                            raise RuntimeError("账号被锁定，请稍后重试")
+                    
+                    # 检查是否登录成功
+                    if '登录成功' in response_text or 'succeed' in response_text.lower():
+                        print("[GreatSQL] 登录成功")
+                        return True
+                    elif '验证码错误' in response_text or '验证码填写错误' in response_text:
+                        if attempt < max_retries - 1:
+                            wait_time = random.randint(1, 3)
+                            print(f"[GreatSQL] 验证码错误，等待 {wait_time} 秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            print(f"[GreatSQL] 验证码错误，已达到最大重试次数 ({max_retries})")
+                            break
+                    elif '用户名或密码错误' in response_text or 'password' in response_text.lower():
+                        raise RuntimeError("用户名或密码错误")
+                    else:
+                        # 尝试访问用户中心验证登录状态
+                        test_url = "https://greatsql.cn/home.php?mod=space"
+                        test_response = self.session.get(test_url)
+                        if '退出' in test_response.text or 'logout' in test_response.text:
+                            print("[GreatSQL] 登录成功（通过用户中心验证）")
+                            return True
+                        else:
+                            if attempt < max_retries - 1:
+                                wait_time = random.randint(1, 3)
+                                print(f"[GreatSQL] 登录状态验证失败，等待 {wait_time} 秒后重试...")
+                                time.sleep(wait_time)
+                                continue
+                            else:
+                                print(f"[GreatSQL] 登录失败，已达到最大重试次数 ({max_retries})")
+                                break
+                else:
+                    raise RuntimeError(f"登录请求失败，状态码: {response.status_code}")
+                    
+            except Exception as e:
+                print(f"[GreatSQL] 登录失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1 and ('验证码' in str(e) or '登录状态验证失败' in str(e)):
+                    continue
+                elif attempt < max_retries - 1:
+                    wait_time = random.randint(1, 3)
+                    print(f"[GreatSQL] 等待 {wait_time} 秒后重试...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[GreatSQL] 登录失败，已达到最大重试次数 ({max_retries}): {str(e)}")
+                    break
+        
+        print("[GreatSQL] 登录失败，已达到最大重试次数")
+        return False
+    
+    def checkin(self):
+        """执行签到"""
+        try:
+            # 先确保已登录
+            if not self.login():
+                raise RuntimeError("登录失败")
+            
+            print("[GreatSQL] 开始执行签到...")
+            
+            # 签到API请求
+            checkin_url = "https://greatsql.cn/plugin.php?id=smx_sign:do&inajax=1&ajaxtarget=do_sign"
+            
+            headers = {
+                'Accept': '*/*',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': 'https://greatsql.cn/home.php?mod=spacecp&ac=credit&op=base',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin'
+            }
+            
+            response = self.session.get(checkin_url, headers=headers)
+            response.raise_for_status()
+            
+            print(f"[GreatSQL] 签到响应状态码: {response.status_code}")
+            print(f"[GreatSQL] 签到响应内容: {response.text}")
+            
+            # 解析XML响应
+            if response.status_code == 200:
+                response_text = response.text.strip()
+                
+                # 检查是否包含签到成功的标识
+                if '签到' in response_text:
+                    # 提取签到天数信息
+                    match = re.search(r'签到\s*(\d+)\s*天', response_text)
+                    if match:
+                        days = match.group(1)
+                        success_msg = f"签到成功，已连续签到 {days} 天"
+                    else:
+                        success_msg = "签到成功"
+                    
+                    print(f"[GreatSQL] {success_msg}")
+                    return {
+                        "message": "签到成功",
+                        "details": success_msg
+                    }
+                elif '已经签到' in response_text or '重复签到' in response_text:
+                    print("[GreatSQL] 今日已签到")
+                    return {
+                        "message": "今日已签到",
+                        "details": "今日已经签到过了"
+                    }
+                else:
+                    raise RuntimeError(f"签到失败，响应内容: {response_text}")
+            else:
+                raise RuntimeError(f"签到请求失败，状态码: {response.status_code}")
+            
+        except Exception as e:
+            print(f"[GreatSQL] 签到失败: {str(e)}")
+            return {
+                "message": "签到失败",
+                "details": str(e)
+            }
 
 class OceanBaseClient:
     def __init__(self, user, pwd):
@@ -699,6 +878,143 @@ class OceanBaseClient:
                 "details": f"OceanBase 签到异常: {str(e)}"
             }
 
+def push_plus(token, title, content):
+    requesturl = f"http://www.pushplus.plus/send"
+    data = {
+        "token": token,
+        "title": title,
+        "content": content,
+        "template": "html",
+        "channel": "wechat"
+    }
+    try:
+        response = requests.post(requesturl, data=data)
+        if response.status_code == 200:
+            json_res = response.json()
+            print(f"pushplus推送完毕：{json_res['code']}-{json_res['msg']}")
+        else:
+            print("pushplus推送失败")
+    except:
+        print("pushplus推送异常")
+
+def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_client, push_token):
+    # 初始化结果变量
+    kb_results = []
+    tidb_result = ""
+    oceanbase_result = ""
+    
+    print(f"\n[{fmt_now()}] === 开始 Kingbase 签到 ===\n")
+    for idx in range(1, kb_times + 1):
+        print(f"\n[{fmt_now()}] === 开始第 {idx}/{kb_times} 次 Kingbase 回帖 ===\n")
+        try:
+            msg = kb_client.reply()
+            log_msg = f"[{fmt_now()}] [成功] Kingbase 第{idx}/{kb_times}次回帖成功：{msg}"
+            print(log_msg)
+            kb_results.append(f"✅ 第{idx}次回帖成功：{msg}")
+        except Exception as e:
+            log_msg = f"[{fmt_now()}] [失败] Kingbase 回帖失败：{e}"
+            print(log_msg)
+            kb_results.append(f"❌ 第{idx}次回帖失败：{str(e)}")
+        if idx < kb_times:
+            random_wait = random.randint(10, 60)
+            print(f"[{fmt_now()}] 回帖后随机等待 {random_wait} 秒...")
+            time.sleep(random_wait)
+
+    print(f"\n[{fmt_now()}] === 开始 TiDB 签到 ===\n")
+    tidb_client = TiDBClient(tidb_user, tidb_pwd)
+    try:
+        res = tidb_client.checkin()
+        log_msg = f"[{fmt_now()}] [成功] TiDB 签到成功：{res}"
+        print(log_msg)
+        if isinstance(res, dict):
+            if "message" in res and res["message"] == "签到成功":
+                if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
+                    continues_days = res.get("continues_checkin_count", 0)
+                    points = res.get("points", 0)
+                    tomorrow_points = res.get("tomorrow_points", 0)
+                    tidb_result = f"✅ TiDB 签到成功！\n　　• 连续签到：{continues_days} 天\n　　• 今日积分：+{points} 点\n　　• 明日积分：+{tomorrow_points} 点"
+                else:
+                    note = res.get("note", "")
+                    tidb_result = f"✅ TiDB 签到成功！\n　　• {note}"
+            else:
+                tidb_result = f"✅ TiDB 签到成功：{res}"
+        else:
+            tidb_result = f"✅ TiDB 签到成功：{res}"
+    except Exception as e:
+        log_msg = f"[{fmt_now()}] [失败] TiDB 签到失败：{e}"
+        print(log_msg)
+        tidb_result = f"❌ TiDB 签到失败：{str(e)}"
+        try:
+            print(f"\n[{fmt_now()}] === 尝试使用备用方法签到 ===\n")
+            tidb_client = TiDBClient(tidb_user, tidb_pwd)
+            tidb_client.session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            })
+            res = tidb_client.checkin()
+            log_msg = f"[{fmt_now()}] [成功] TiDB 备用方法签到成功：{res}"
+            print(log_msg)    
+            if isinstance(res, dict):
+                if "message" in res and res["message"] == "签到成功":
+                    if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
+                        continues_days = res.get("continues_checkin_count", 0)
+                        points = res.get("points", 0)
+                        tomorrow_points = res.get("tomorrow_points", 0)
+                        tidb_result = f"✅ TiDB 签到成功！\n　　• 连续签到：{continues_days} 天\n　　• 今日积分：+{points} 点\n　　• 明日积分：+{tomorrow_points} 点"
+                    else:
+                        note = res.get("note", "")
+                        tidb_result = f"✅ TiDB 签到成功！\n　　• {note}"
+                else:
+                    tidb_result = f"✅ TiDB 签到成功：{res}"
+            else:
+                tidb_result = f"✅ TiDB 备用方法签到成功：{res}"
+        except Exception as e2:
+            log_msg = f"[{fmt_now()}] [失败] TiDB 备用方法也失败：{e2}"
+            print(log_msg)
+
+    print(f"\n[{fmt_now()}] === 开始 OceanBase 签到 ===\n")
+    try:
+        res = oceanbase_client.checkin()
+        log_msg = f"[{fmt_now()}] [成功] OceanBase 签到成功：{res}"
+        print(log_msg)
+        if isinstance(res, dict):
+            details = res.get("details", "")
+            oceanbase_result = f"✅ OceanBase 签到成功！\n　　• {details}"
+        else:
+            oceanbase_result = f"✅ OceanBase 签到成功：{res}"
+    except Exception as e:
+        log_msg = f"[{fmt_now()}] [失败] OceanBase 签到失败：{e}"
+        print(log_msg)
+        oceanbase_result = f"❌ OceanBase 签到失败：{str(e)}"
+    
+    # GreatSQL 签到
+    if greatsql_client:
+        print(f"\n[{fmt_now()}] === 开始 GreatSQL 签到 ===\n")
+        try:
+            res = greatsql_client.checkin()
+            log_msg = f"[{fmt_now()}] [成功] GreatSQL 签到成功：{res}"
+            print(log_msg)
+            if isinstance(res, dict):
+                details = res.get("details", "")
+                greatsql_result = f"✅ GreatSQL 签到成功！\n　　• {details}"
+            else:
+                greatsql_result = f"✅ GreatSQL 签到成功：{res}"
+        except Exception as e:
+            log_msg = f"[{fmt_now()}] [失败] GreatSQL 签到失败：{e}"
+            print(log_msg)
+            greatsql_result = f"❌ GreatSQL 签到失败：{str(e)}"
+    else:
+        print(f"\n[{fmt_now()}] === 跳过 GreatSQL 签到（未配置） ===\n")
+        greatsql_result = "⚠️ GreatSQL 未配置，跳过签到"
+    
+    print(f"\n[{fmt_now()}] === 任务完成，准备推送结果 ===\n")
+    if push_token:
+        today = bj_time().strftime("%Y-%m-%d")
+        title = f"论坛签到任务结果 - {today}"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p><h3>GreatSQL 签到</h3><p>{greatsql_result}</p>"
+        push_plus(push_token, title, content)
+        print(f"[{fmt_now()}] 结果推送完成")
+
+
 if __name__ == "__main__":
     
     cfg = json.loads(os.environ["CONFIG"])
@@ -713,7 +1029,17 @@ if __name__ == "__main__":
     ob_user = ob_config["OCEANBASE_USER"]
     ob_pwd = ob_config["OCEANBASE_PWD"]
     
+    # GreatSQL 配置
+    greatsql_users = os.environ.get("GREATSQL_USER", "").split("#") if os.environ.get("GREATSQL_USER") else []
+    greatsql_pwds = os.environ.get("GREATSQL_PWD", "").split("#") if os.environ.get("GREATSQL_PWD") else []
+    
     push_token = cfg.get("PUSH_PLUS_TOKEN")
     
     for u,p in zip(kb_user, kb_pwd):
-        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), push_token)
+        # 创建 GreatSQL 客户端（如果配置了的话）
+        greatsql_client = None
+        if greatsql_users and greatsql_pwds and len(greatsql_users) > 0 and len(greatsql_pwds) > 0:
+            greatsql_client = GreatSQLClient(greatsql_users[0], greatsql_pwds[0])
+        
+        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), greatsql_client, push_token)
+        
