@@ -4,6 +4,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 import base64
 import re
+import hashlib
 from urllib.parse import urlencode, parse_qs, urlparse
 
 try:
@@ -878,6 +879,257 @@ class OceanBaseClient:
                 "details": f"OceanBase 签到异常: {str(e)}"
             }
 
+class PGFansClient:
+    def __init__(self, mobile, password):
+        """初始化 PGFans 客户端"""
+        self.mobile = mobile
+        self.password = password
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:142.0) Gecko/20100101 Firefox/142.0',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Origin': 'https://www.pgfans.cn',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Referer': 'https://www.pgfans.cn/',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'Priority': 'u=0'
+        })
+        self.user_id = None
+        self.sessionid = None
+    
+    def log(self, message):
+        """记录日志"""
+        print(f"[{fmt_now()}] {message}")
+    
+    def generate_signature(self, timestamp, action="login", **kwargs):
+        """生成签名"""
+        # 根据 JavaScript 代码分析得出的签名算法
+        # Md5.hashStr('CYYbQyB7FdIS8xuBEwVwbBDMQKOZPMXK|' + timestamp + '|' + action)
+        secret_key = "CYYbQyB7FdIS8xuBEwVwbBDMQKOZPMXK"
+        
+        # 时间戳需要是10位秒级时间戳
+        if len(timestamp) > 10:
+            timestamp = timestamp[:10]
+        
+        # 构造签名字符串
+        sign_string = f"{secret_key}|{timestamp}|{action}"
+        
+        # 生成 MD5 签名
+        return hashlib.md5(sign_string.encode()).hexdigest()
+    
+    def login(self):
+        """登录 PGFans 论坛"""
+        try:
+            self.log("开始登录 PGFans 论坛...")
+            
+            # 生成时间戳（10位秒级）
+            timestamp = str(int(time.time()))
+            
+            # 生成签名
+            signature = self.generate_signature(timestamp, "login")
+            
+            # 登录请求数据
+            login_data = {
+                "timestamp": timestamp,
+                "signature": signature,
+                "mobile": self.mobile,
+                "user_pass": self.password
+            }
+            
+            # 发送登录请求
+            login_url = "https://admin.pgfans.cn/user/User/login"
+            response = self.session.post(login_url, json=login_data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == "200":
+                    data = result.get("data", {})
+                    self.user_id = data.get("id")
+                    self.sessionid = data.get("sessionid")
+                    
+                    self.log(f"登录成功，用户ID: {self.user_id}")
+                    
+                    # 执行登录验证
+                    return self.check_login()
+                else:
+                    error_msg = result.get("message", "登录失败")
+                    self.log(f"登录失败: {error_msg}")
+                    return False
+            else:
+                self.log(f"登录请求失败，状态码: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            self.log(f"登录异常: {str(e)}")
+            return False
+    
+    def check_login(self):
+        """验证登录状态"""
+        try:
+            if not self.user_id or not self.sessionid:
+                self.log("缺少用户ID或会话ID，无法验证登录")
+                return False
+            
+            # 生成时间戳和签名
+            timestamp = str(int(time.time()))
+            signature = self.generate_signature(timestamp, "checklogin")
+            
+            # 验证请求数据
+            check_data = {
+                "timestamp": timestamp,
+                "signature": signature,
+                "user_id": self.user_id,
+                "sessionid": self.sessionid
+            }
+            
+            # 发送验证请求
+            check_url = "https://admin.pgfans.cn/user/user/checkLogin"
+            response = self.session.post(check_url, json=check_data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == "200":
+                    data = result.get("data", {})
+                    login_status = data.get("login_status")
+                    if login_status == 1:
+                        self.log("登录验证成功")
+                        return True
+                    else:
+                        self.log("登录验证失败，状态异常")
+                        return False
+                else:
+                    error_msg = result.get("message", "验证失败")
+                    self.log(f"登录验证失败: {error_msg}")
+                    return False
+            else:
+                self.log(f"验证请求失败，状态码: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            self.log(f"登录验证异常: {str(e)}")
+            return False
+    
+    def get_user_info(self):
+        """获取用户信息，包括P豆数量"""
+        try:
+            if not self.user_id or not self.sessionid:
+                self.log("缺少用户ID或会话ID，无法获取用户信息")
+                return None
+            
+            # 生成时间戳和签名
+            timestamp = str(int(time.time()))
+            signature = self.generate_signature(timestamp, "getnewinfo")
+            
+            # 用户信息请求数据
+            info_data = {
+                "timestamp": timestamp,
+                "signature": signature,
+                "user_id": self.user_id,
+                "sessionid": self.sessionid
+            }
+            
+            # 发送用户信息请求
+            info_url = "https://admin.pgfans.cn/user/user/getNewInfo"
+            response = self.session.post(info_url, json=info_data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == "200":
+                    data = result.get("data", {})
+                    pgdou = data.get("pgdou", 0)
+                    self.log(f"当前P豆数量: {pgdou}")
+                    return pgdou
+                else:
+                    error_msg = result.get("message", "获取用户信息失败")
+                    self.log(f"获取用户信息失败: {error_msg}")
+                    return None
+            else:
+                self.log(f"用户信息请求失败，状态码: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            self.log(f"获取用户信息异常: {str(e)}")
+            return None
+    
+    def checkin(self):
+        """执行签到"""
+        try:
+            # 先确保已登录
+            if not self.login():
+                raise RuntimeError("登录失败")
+            
+            self.log("开始执行签到...")
+            
+            # 生成时间戳和签名
+            timestamp = str(int(time.time()))
+            signature = self.generate_signature(timestamp, "signin")
+            
+            # 签到请求数据
+            checkin_data = {
+                "timestamp": timestamp,
+                "signature": signature,
+                "user_id": self.user_id
+            }
+            
+            # 发送签到请求
+            checkin_url = "https://admin.pgfans.cn/user/pgdou/signIn"
+            response = self.session.post(checkin_url, json=checkin_data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == "200":
+                    data = result.get("data", {})
+                    earned_pgdou = data.get("pgdou", 0)
+                    
+                    # 获取当前总P豆数量
+                    total_pgdou = self.get_user_info()
+                    
+                    details = f"获得 {earned_pgdou} 个 PG豆"
+                    if total_pgdou is not None:
+                        details += f"，当前总计: {total_pgdou} 个 PG豆"
+                    
+                    return {
+                        "message": "签到成功",
+                        "details": details
+                    }
+                else:
+                    error_msg = result.get("message", "签到失败")
+                    # 检查是否已经签到
+                    if "已签到" in error_msg or "重复" in error_msg:
+                        # 即使已签到，也获取当前P豆数量
+                        total_pgdou = self.get_user_info()
+                        details = "今天已经签到过了"
+                        if total_pgdou is not None:
+                            details += f"，当前总计: {total_pgdou} 个 PG豆"
+                        
+                        return {
+                            "message": "今日已签到",
+                            "details": details
+                        }
+                    else:
+                        return {
+                            "message": "签到失败",
+                            "details": error_msg
+                        }
+            else:
+                return {
+                    "message": "签到失败",
+                    "details": f"请求失败，状态码: {response.status_code}"
+                }
+                
+        except Exception as e:
+            self.log(f"签到失败: {str(e)}")
+            return {
+                "message": "签到失败",
+                "details": f"签到异常: {str(e)}"
+            }
+
 def push_plus(token, title, content):
     requesturl = f"http://www.pushplus.plus/send"
     data = {
@@ -897,7 +1149,7 @@ def push_plus(token, title, content):
     except:
         print("pushplus推送异常")
 
-def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_client, push_token):
+def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_client, pgfans_client, push_token):
     # 初始化结果变量
     kb_results = []
     tidb_result = ""
@@ -1006,11 +1258,32 @@ def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_cli
         print(f"\n[{fmt_now()}] === 跳过 GreatSQL 签到（未配置） ===\n")
         greatsql_result = "⚠️ GreatSQL 未配置，跳过签到"
     
+    # PGFans 签到
+    if pgfans_client:
+        print(f"\n[{fmt_now()}] === 开始 PGFans 签到 ===\n")
+        try:
+            res = pgfans_client.checkin()
+            log_msg = f"[{fmt_now()}] [成功] PGFans 签到成功：{res}"
+            print(log_msg)
+            if isinstance(res, dict):
+                message = res.get("message", "")
+                details = res.get("details", "")
+                pgfans_result = f"✅ PGFans {message}！\n　　• {details}"
+            else:
+                pgfans_result = f"✅ PGFans 签到成功：{res}"
+        except Exception as e:
+            log_msg = f"[{fmt_now()}] [失败] PGFans 签到失败：{e}"
+            print(log_msg)
+            pgfans_result = f"❌ PGFans 签到失败：{str(e)}"
+    else:
+        print(f"\n[{fmt_now()}] === 跳过 PGFans 签到（未配置） ===\n")
+        pgfans_result = "⚠️ PGFans 未配置，跳过签到"
+    
     print(f"\n[{fmt_now()}] === 任务完成，准备推送结果 ===\n")
     if push_token:
         today = bj_time().strftime("%Y-%m-%d")
         title = f"论坛签到任务结果 - {today}"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p><h3>GreatSQL 签到</h3><p>{greatsql_result}</p>"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p><h3>GreatSQL 签到</h3><p>{greatsql_result}</p><h3>PGFans 签到</h3><p>{pgfans_result}</p>"
         push_plus(push_token, title, content)
         print(f"[{fmt_now()}] 结果推送完成")
 
@@ -1033,6 +1306,10 @@ if __name__ == "__main__":
     greatsql_users = os.environ.get("GREATSQL_USER", "").split("#") if os.environ.get("GREATSQL_USER") else []
     greatsql_pwds = os.environ.get("GREATSQL_PWD", "").split("#") if os.environ.get("GREATSQL_PWD") else []
     
+    # PGFans 配置
+    pgfans_users = os.environ.get("PGFANS_USER", "").split("#") if os.environ.get("PGFANS_USER") else []
+    pgfans_pwds = os.environ.get("PGFANS_PWD", "").split("#") if os.environ.get("PGFANS_PWD") else []
+    
     push_token = cfg.get("PUSH_PLUS_TOKEN")
     
     for u,p in zip(kb_user, kb_pwd):
@@ -1041,5 +1318,10 @@ if __name__ == "__main__":
         if greatsql_users and greatsql_pwds and len(greatsql_users) > 0 and len(greatsql_pwds) > 0:
             greatsql_client = GreatSQLClient(greatsql_users[0], greatsql_pwds[0])
         
-        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), greatsql_client, push_token)
+        # 创建 PGFans 客户端（如果配置了的话）
+        pgfans_client = None
+        if pgfans_users and pgfans_pwds and len(pgfans_users) > 0 and len(pgfans_pwds) > 0:
+            pgfans_client = PGFansClient(pgfans_users[0], pgfans_pwds[0])
+        
+        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), greatsql_client, pgfans_client, push_token)
         
