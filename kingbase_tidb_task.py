@@ -2,9 +2,13 @@ import random, time, json, os, requests, pytz
 from datetime import datetime, timedelta
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+from Crypto.Random import get_random_bytes
 import base64
 import re
 import hashlib
+import uuid
 from urllib.parse import urlencode, parse_qs, urlparse
 
 try:
@@ -1130,6 +1134,260 @@ class PGFansClient:
                 "details": f"签到异常: {str(e)}"
             }
 
+class MoDBClient:
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin'
+        })
+        self.user_id = None
+        self.token = None
+    
+    def log(self, message):
+        # 空操作，不输出日志
+        pass
+    
+    def generate_uuid(self):
+        """生成UUID"""
+        return str(uuid.uuid4())
+    
+    def aes_encrypt(self, data, key):
+        """AES加密"""
+        try:
+            # 将密钥转换为字节
+            key_bytes = key.encode('utf-8')[:16].ljust(16, b'\0')
+            
+            # 创建AES加密器
+            cipher = AES.new(key_bytes, AES.MODE_ECB)
+            
+            # 对数据进行填充并加密
+            padded_data = pad(data.encode('utf-8'), AES.block_size)
+            encrypted = cipher.encrypt(padded_data)
+            
+            # 返回base64编码的结果
+            return base64.b64encode(encrypted).decode('utf-8')
+        except Exception as e:
+            self.log(f"AES加密失败: {str(e)}")
+            return None
+    
+    def get_timestamp_info(self):
+        """获取时间戳信息"""
+        try:
+            response = self.session.get('https://www.modb.pro/api/user/getTimestampInfo')
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    return data.get('data', {})
+            return None
+        except Exception as e:
+            self.log(f"获取时间戳信息失败: {str(e)}")
+            return None
+    
+    def generate_req_key(self, timestamp_info):
+        """生成请求密钥"""
+        try:
+            if not timestamp_info:
+                return None
+            
+            timestamp = timestamp_info.get('timestamp')
+            nonce = timestamp_info.get('nonce')
+            
+            if not timestamp or not nonce:
+                return None
+            
+            # 生成reqKey
+            req_key = f"{timestamp}{nonce}"
+            return req_key
+        except Exception as e:
+            self.log(f"生成请求密钥失败: {str(e)}")
+            return None
+    
+    def login(self):
+        """登录"""
+        try:
+            # 获取时间戳信息
+            timestamp_info = self.get_timestamp_info()
+            if not timestamp_info:
+                return {'success': False, 'message': '获取时间戳信息失败', 'total_points': 0}
+            
+            # 生成reqKey
+            req_key = self.generate_req_key(timestamp_info)
+            if not req_key:
+                return {'success': False, 'message': '生成请求密钥失败', 'total_points': 0}
+            
+            # 加密密码
+            encrypted_password = self.aes_encrypt(self.password, req_key)
+            if not encrypted_password:
+                return {'success': False, 'message': '密码加密失败', 'total_points': 0}
+            
+            # 登录请求
+            login_data = {
+                'username': self.username,
+                'password': encrypted_password,
+                'uuid': self.generate_uuid()
+            }
+            
+            response = self.session.post('https://www.modb.pro/api/user/login', json=login_data)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    user_data = data.get('data', {})
+                    self.user_id = user_data.get('id')
+                    self.token = user_data.get('token')
+                    self.log(f"登录成功，用户ID: {self.user_id}")
+                    return True
+                else:
+                    self.log(f"登录失败: {data.get('message', '未知错误')}")
+                    return False
+            else:
+                self.log(f"登录请求失败，状态码: {response.status_code}")
+                return False
+        except Exception as e:
+            self.log(f"登录异常: {str(e)}")
+            return False
+    
+    def checkin(self):
+        """签到"""
+        try:
+            # 先登录
+            if not self.login():
+                return {'success': False, 'message': '登录失败', 'total_points': 0}
+            
+            # 获取时间戳信息
+            timestamp_info = self.get_timestamp_info()
+            if not timestamp_info:
+                return {'success': False, 'message': '获取时间戳信息失败', 'total_points': 0}
+            
+            # 生成reqKey
+            req_key = self.generate_req_key(timestamp_info)
+            if not req_key:
+                return {'success': False, 'message': '生成请求密钥失败', 'total_points': 0}
+            
+            # 签到请求
+            checkin_data = {
+                'reqKey': req_key
+            }
+            
+            response = self.session.post('https://www.modb.pro/api/user/checkIn', json=checkin_data)
+            
+            if response.status_code == 200:
+                data = response.json()
+                message = data.get('message', '')
+                
+                # 检查是否已经签到
+                if '已经签到' in message or '重复签到' in message or '签过到' in message:
+                    # 获取用户详情
+                    user_detail = self.get_user_detail()
+                    total_points = user_detail.get('point', 0) if user_detail else 0
+                    
+                    return {
+                        'success': True,
+                        'message': message,
+                        'total_points': total_points,
+                        'already_checked': True
+                    }
+                elif data.get('success'):
+                    # 签到成功
+                    checkin_data = data.get('data', {})
+                    points = checkin_data.get('point', 0)
+                    
+                    # 获取用户详情
+                    user_detail = self.get_user_detail()
+                    total_points = user_detail.get('point', 0) if user_detail else 0
+                    
+                    return {
+                        'success': True,
+                        'message': f'签到成功，获得 {points} 墨值',
+                        'total_points': total_points,
+                        'points': points
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'message': message or '签到失败',
+                        'total_points': 0
+                    }
+            else:
+                return {
+                    'success': False,
+                    'message': f'签到请求失败，状态码: {response.status_code}',
+                    'total_points': 0
+                }
+        except Exception as e:
+            self.log(f"签到异常: {str(e)}")
+            return {
+                'success': False,
+                'message': f'签到异常: {str(e)}',
+                'total_points': 0
+            }
+    
+    def get_user_detail(self):
+        """获取用户详情"""
+        try:
+            response = self.session.get('https://www.modb.pro/api/user/detail')
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    return data.get('data', {})
+            return None
+        except Exception as e:
+            self.log(f"获取用户详情失败: {str(e)}")
+            return None
+    
+    def send_notification(self, result):
+        """发送通知"""
+        try:
+            push_token = os.environ.get('PUSH_PLUS_TOKEN')
+            if not push_token:
+                self.log("未配置PUSH_PLUS_TOKEN，跳过消息推送")
+                return
+            
+            if result['success']:
+                if result.get('already_checked'):
+                    title = "✅ 墨天轮签到成功！今天已经签到过了"
+                    content = f"今天已经签到过了，当前总墨值: {result['total_points']}"
+                else:
+                    title = "✅ 墨天轮签到成功！"
+                    content = f"签到成功，获得 {result.get('points', 0)} 墨值，当前总墨值: {result['total_points']}"
+            else:
+                title = "❌ 墨天轮签到失败"
+                content = f"签到失败: {result['message']}"
+            
+            # 发送推送
+            push_plus(push_token, title, content)
+            
+        except Exception as e:
+            self.log(f"发送通知失败: {str(e)}")
+    
+    def run_checkin(self):
+        """执行签到并发送通知"""
+        result = self.checkin()
+        
+        if result['success']:
+            if result.get('already_checked'):
+                message = f"今天已经签到过了，当前总墨值: {result['total_points']}"
+            else:
+                message = f"签到成功，获得 {result.get('points', 0)} 墨值，当前总墨值: {result['total_points']}"
+            print(message)
+        else:
+            message = f"签到失败: {result['message']}"
+            print(message)
+        
+        # 发送通知
+        self.send_notification(result)
+        
+        return result
+
 def push_plus(token, title, content):
     requesturl = f"http://www.pushplus.plus/send"
     data = {
@@ -1149,7 +1407,7 @@ def push_plus(token, title, content):
     except:
         print("pushplus推送异常")
 
-def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_client, pgfans_client, push_token):
+def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_client, pgfans_client, modb_clients, push_token):
     # 初始化结果变量
     kb_results = []
     tidb_result = ""
@@ -1279,11 +1537,41 @@ def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_cli
         print(f"\n[{fmt_now()}] === 跳过 PGFans 签到（未配置） ===\n")
         pgfans_result = "⚠️ PGFans 未配置，跳过签到"
     
+    # MoDB 墨天轮签到
+    modb_results = []
+    if modb_clients:
+        for idx, modb_client in enumerate(modb_clients, 1):
+            print(f"\n[{fmt_now()}] === 开始第 {idx} 个 MoDB 账号签到 ===\n")
+            try:
+                res = modb_client.checkin()
+                log_msg = f"[{fmt_now()}] [成功] MoDB 第{idx}个账号签到成功：{res}"
+                print(log_msg)
+                if isinstance(res, dict):
+                    if res.get('success'):
+                        if res.get('already_checked'):
+                            modb_results.append(f"✅ 第{idx}个账号：今天已经签到过了，当前总墨值: {res['total_points']}")
+                        else:
+                            points = res.get('points', 0)
+                            total_points = res.get('total_points', 0)
+                            modb_results.append(f"✅ 第{idx}个账号：签到成功，获得 {points} 墨值，当前总墨值: {total_points}")
+                    else:
+                        modb_results.append(f"❌ 第{idx}个账号：签到失败 - {res.get('message', '未知错误')}")
+                else:
+                    modb_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] MoDB 第{idx}个账号签到失败：{e}"
+                print(log_msg)
+                modb_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+    else:
+        print(f"\n[{fmt_now()}] === 跳过 MoDB 签到（未配置） ===\n")
+        modb_results.append("⚠️ MoDB 未配置，跳过签到")
+    
     print(f"\n[{fmt_now()}] === 任务完成，准备推送结果 ===\n")
     if push_token:
         today = bj_time().strftime("%Y-%m-%d")
         title = f"论坛签到任务结果 - {today}"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p><h3>GreatSQL 签到</h3><p>{greatsql_result}</p><h3>PGFans 签到</h3><p>{pgfans_result}</p>"
+        modb_content = f"<ul>{''.join([f'<li>{item}</li>' for item in modb_results])}</ul>" if modb_results else "<p>⚠️ MoDB 未配置，跳过签到</p>"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p><h3>GreatSQL 签到</h3><p>{greatsql_result}</p><h3>PGFans 签到</h3><p>{pgfans_result}</p><h3>MoDB 墨天轮签到</h3>{modb_content}"
         push_plus(push_token, title, content)
         print(f"[{fmt_now()}] 结果推送完成")
 
@@ -1310,6 +1598,10 @@ if __name__ == "__main__":
     pgfans_users = os.environ.get("PGFANS_USER", "").split("#") if os.environ.get("PGFANS_USER") else []
     pgfans_pwds = os.environ.get("PGFANS_PWD", "").split("#") if os.environ.get("PGFANS_PWD") else []
     
+    # MoDB 墨天轮配置
+    modb_users = os.environ.get("MODB_USER", "").split("#") if os.environ.get("MODB_USER") else []
+    modb_pwds = os.environ.get("MODB_PWD", "").split("#") if os.environ.get("MODB_PWD") else []
+    
     push_token = cfg.get("PUSH_PLUS_TOKEN")
     
     for u,p in zip(kb_user, kb_pwd):
@@ -1323,5 +1615,12 @@ if __name__ == "__main__":
         if pgfans_users and pgfans_pwds and len(pgfans_users) > 0 and len(pgfans_pwds) > 0:
             pgfans_client = PGFansClient(pgfans_users[0], pgfans_pwds[0])
         
-        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), greatsql_client, pgfans_client, push_token)
+        # 创建 MoDB 墨天轮客户端列表（如果配置了的话）
+        modb_clients = []
+        if modb_users and modb_pwds and len(modb_users) > 0 and len(modb_pwds) > 0:
+            for modb_user, modb_pwd in zip(modb_users, modb_pwds):
+                if modb_user.strip() and modb_pwd.strip():  # 确保用户名和密码不为空
+                    modb_clients.append(MoDBClient(modb_user.strip(), modb_pwd.strip()))
+        
+        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), greatsql_client, pgfans_client, modb_clients, push_token)
         
