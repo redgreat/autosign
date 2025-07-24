@@ -1407,135 +1407,157 @@ def push_plus(token, title, content):
     except:
         print("pushplus推送异常")
 
-def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_client, pgfans_client, modb_clients, push_token):
+def run_one_day(kb_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_clients, pgfans_clients, modb_clients, push_token):
     # 初始化结果变量
     kb_results = []
     tidb_result = ""
     oceanbase_result = ""
     
     print(f"\n[{fmt_now()}] === 开始 Kingbase 签到 ===\n")
-    for idx in range(1, kb_times + 1):
-        print(f"\n[{fmt_now()}] === 开始第 {idx}/{kb_times} 次 Kingbase 回帖 ===\n")
-        try:
-            msg = kb_client.reply()
-            log_msg = f"[{fmt_now()}] [成功] Kingbase 第{idx}/{kb_times}次回帖成功：{msg}"
-            print(log_msg)
-            kb_results.append(f"✅ 第{idx}次回帖成功：{msg}")
-        except Exception as e:
-            log_msg = f"[{fmt_now()}] [失败] Kingbase 回帖失败：{e}"
-            print(log_msg)
-            kb_results.append(f"❌ 第{idx}次回帖失败：{str(e)}")
-        if idx < kb_times:
-            random_wait = random.randint(10, 60)
-            print(f"[{fmt_now()}] 回帖后随机等待 {random_wait} 秒...")
-            time.sleep(random_wait)
+    for kb_idx, kb_client in enumerate(kb_clients, 1):
+        print(f"\n[{fmt_now()}] === 开始第 {kb_idx} 个 Kingbase 账号回帖 ===\n")
+        for idx in range(1, kb_times + 1):
+            print(f"\n[{fmt_now()}] === 第 {kb_idx} 个账号第 {idx}/{kb_times} 次回帖 ===\n")
+            try:
+                msg = kb_client.reply()
+                log_msg = f"[{fmt_now()}] [成功] Kingbase 第{kb_idx}个账号第{idx}/{kb_times}次回帖成功：{msg}"
+                print(log_msg)
+                kb_results.append(f"✅ 第{kb_idx}个账号第{idx}次回帖成功：{msg}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] Kingbase 第{kb_idx}个账号回帖失败：{e}"
+                print(log_msg)
+                kb_results.append(f"❌ 第{kb_idx}个账号第{idx}次回帖失败：{str(e)}")
+            if idx < kb_times:
+                random_wait = random.randint(10, 60)
+                print(f"[{fmt_now()}] 回帖后随机等待 {random_wait} 秒...")
+                time.sleep(random_wait)
+        if kb_idx < len(kb_clients):
+            account_wait = random.randint(30, 90)
+            print(f"[{fmt_now()}] 账号间随机等待 {account_wait} 秒...")
+            time.sleep(account_wait)
 
-    print(f"\n[{fmt_now()}] === 开始 TiDB 签到 ===\n")
-    tidb_client = TiDBClient(tidb_user, tidb_pwd)
-    try:
-        res = tidb_client.checkin()
-        log_msg = f"[{fmt_now()}] [成功] TiDB 签到成功：{res}"
-        print(log_msg)
-        if isinstance(res, dict):
-            if "message" in res and res["message"] == "签到成功":
-                if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
-                    continues_days = res.get("continues_checkin_count", 0)
-                    points = res.get("points", 0)
-                    tomorrow_points = res.get("tomorrow_points", 0)
-                    tidb_result = f"✅ TiDB 签到成功！\n　　• 连续签到：{continues_days} 天\n　　• 今日积分：+{points} 点\n　　• 明日积分：+{tomorrow_points} 点"
-                else:
-                    note = res.get("note", "")
-                    tidb_result = f"✅ TiDB 签到成功！\n　　• {note}"
-            else:
-                tidb_result = f"✅ TiDB 签到成功：{res}"
-        else:
-            tidb_result = f"✅ TiDB 签到成功：{res}"
-    except Exception as e:
-        log_msg = f"[{fmt_now()}] [失败] TiDB 签到失败：{e}"
-        print(log_msg)
-        tidb_result = f"❌ TiDB 签到失败：{str(e)}"
-        try:
-            print(f"\n[{fmt_now()}] === 尝试使用备用方法签到 ===\n")
-            tidb_client = TiDBClient(tidb_user, tidb_pwd)
-            tidb_client.session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            })
-            res = tidb_client.checkin()
-            log_msg = f"[{fmt_now()}] [成功] TiDB 备用方法签到成功：{res}"
-            print(log_msg)    
-            if isinstance(res, dict):
-                if "message" in res and res["message"] == "签到成功":
-                    if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
-                        continues_days = res.get("continues_checkin_count", 0)
-                        points = res.get("points", 0)
-                        tomorrow_points = res.get("tomorrow_points", 0)
-                        tidb_result = f"✅ TiDB 签到成功！\n　　• 连续签到：{continues_days} 天\n　　• 今日积分：+{points} 点\n　　• 明日积分：+{tomorrow_points} 点"
+    # TiDB 签到
+    tidb_results = []
+    if tidb_clients:
+        for idx, tidb_client in enumerate(tidb_clients, 1):
+            print(f"\n[{fmt_now()}] === 开始第 {idx} 个 TiDB 账号签到 ===\n")
+            try:
+                res = tidb_client.checkin()
+                log_msg = f"[{fmt_now()}] [成功] TiDB 第{idx}个账号签到成功：{res}"
+                print(log_msg)
+                if isinstance(res, dict):
+                    if "message" in res and res["message"] == "签到成功":
+                        if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
+                            continues_days = res.get("continues_checkin_count", 0)
+                            points = res.get("points", 0)
+                            tomorrow_points = res.get("tomorrow_points", 0)
+                            tidb_results.append(f"✅ 第{idx}个账号：签到成功，连续签到 {continues_days} 天，今日积分 +{points} 点，明日积分 +{tomorrow_points} 点")
+                        else:
+                            note = res.get("note", "")
+                            tidb_results.append(f"✅ 第{idx}个账号：签到成功，{note}")
                     else:
-                        note = res.get("note", "")
-                        tidb_result = f"✅ TiDB 签到成功！\n　　• {note}"
+                        tidb_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
                 else:
-                    tidb_result = f"✅ TiDB 签到成功：{res}"
-            else:
-                tidb_result = f"✅ TiDB 备用方法签到成功：{res}"
-        except Exception as e2:
-            log_msg = f"[{fmt_now()}] [失败] TiDB 备用方法也失败：{e2}"
-            print(log_msg)
+                    tidb_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] TiDB 第{idx}个账号签到失败：{e}"
+                print(log_msg)
+                try:
+                    print(f"\n[{fmt_now()}] === 第{idx}个账号尝试使用备用方法签到 ===\n")
+                    tidb_client.session.headers.update({
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    })
+                    res = tidb_client.checkin()
+                    log_msg = f"[{fmt_now()}] [成功] TiDB 第{idx}个账号备用方法签到成功：{res}"
+                    print(log_msg)    
+                    if isinstance(res, dict):
+                        if "message" in res and res["message"] == "签到成功":
+                            if "continues_checkin_count" in res and res["continues_checkin_count"] != "未知":
+                                continues_days = res.get("continues_checkin_count", 0)
+                                points = res.get("points", 0)
+                                tomorrow_points = res.get("tomorrow_points", 0)
+                                tidb_results.append(f"✅ 第{idx}个账号：备用方法签到成功，连续签到 {continues_days} 天，今日积分 +{points} 点，明日积分 +{tomorrow_points} 点")
+                            else:
+                                note = res.get("note", "")
+                                tidb_results.append(f"✅ 第{idx}个账号：备用方法签到成功，{note}")
+                        else:
+                            tidb_results.append(f"✅ 第{idx}个账号：备用方法签到成功 - {res}")
+                    else:
+                        tidb_results.append(f"✅ 第{idx}个账号：备用方法签到成功 - {res}")
+                except Exception as e2:
+                    log_msg = f"[{fmt_now()}] [失败] TiDB 第{idx}个账号备用方法也失败：{e2}"
+                    print(log_msg)
+                    tidb_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+    else:
+        print(f"\n[{fmt_now()}] === 跳过 TiDB 签到（未配置） ===\n")
+        tidb_results.append("⚠️ TiDB 未配置，跳过签到")
 
-    print(f"\n[{fmt_now()}] === 开始 OceanBase 签到 ===\n")
-    try:
-        res = oceanbase_client.checkin()
-        log_msg = f"[{fmt_now()}] [成功] OceanBase 签到成功：{res}"
-        print(log_msg)
-        if isinstance(res, dict):
-            details = res.get("details", "")
-            oceanbase_result = f"✅ OceanBase 签到成功！\n　　• {details}"
-        else:
-            oceanbase_result = f"✅ OceanBase 签到成功：{res}"
-    except Exception as e:
-        log_msg = f"[{fmt_now()}] [失败] OceanBase 签到失败：{e}"
-        print(log_msg)
-        oceanbase_result = f"❌ OceanBase 签到失败：{str(e)}"
+    # OceanBase 签到
+    oceanbase_results = []
+    if oceanbase_clients:
+        for idx, oceanbase_client in enumerate(oceanbase_clients, 1):
+            print(f"\n[{fmt_now()}] === 开始第 {idx} 个 OceanBase 账号签到 ===\n")
+            try:
+                res = oceanbase_client.checkin()
+                log_msg = f"[{fmt_now()}] [成功] OceanBase 第{idx}个账号签到成功：{res}"
+                print(log_msg)
+                if isinstance(res, dict):
+                    details = res.get("details", "")
+                    oceanbase_results.append(f"✅ 第{idx}个账号：签到成功，{details}")
+                else:
+                    oceanbase_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] OceanBase 第{idx}个账号签到失败：{e}"
+                print(log_msg)
+                oceanbase_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+    else:
+        print(f"\n[{fmt_now()}] === 跳过 OceanBase 签到（未配置） ===\n")
+        oceanbase_results.append("⚠️ OceanBase 未配置，跳过签到")
     
     # GreatSQL 签到
-    if greatsql_client:
-        print(f"\n[{fmt_now()}] === 开始 GreatSQL 签到 ===\n")
-        try:
-            res = greatsql_client.checkin()
-            log_msg = f"[{fmt_now()}] [成功] GreatSQL 签到成功：{res}"
-            print(log_msg)
-            if isinstance(res, dict):
-                details = res.get("details", "")
-                greatsql_result = f"✅ GreatSQL 签到成功！\n　　• {details}"
-            else:
-                greatsql_result = f"✅ GreatSQL 签到成功：{res}"
-        except Exception as e:
-            log_msg = f"[{fmt_now()}] [失败] GreatSQL 签到失败：{e}"
-            print(log_msg)
-            greatsql_result = f"❌ GreatSQL 签到失败：{str(e)}"
+    greatsql_results = []
+    if greatsql_clients:
+        for idx, greatsql_client in enumerate(greatsql_clients, 1):
+            print(f"\n[{fmt_now()}] === 开始第 {idx} 个 GreatSQL 账号签到 ===\n")
+            try:
+                res = greatsql_client.checkin()
+                log_msg = f"[{fmt_now()}] [成功] GreatSQL 第{idx}个账号签到成功：{res}"
+                print(log_msg)
+                if isinstance(res, dict):
+                    details = res.get("details", "")
+                    greatsql_results.append(f"✅ 第{idx}个账号：签到成功，{details}")
+                else:
+                    greatsql_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] GreatSQL 第{idx}个账号签到失败：{e}"
+                print(log_msg)
+                greatsql_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
     else:
         print(f"\n[{fmt_now()}] === 跳过 GreatSQL 签到（未配置） ===\n")
-        greatsql_result = "⚠️ GreatSQL 未配置，跳过签到"
+        greatsql_results.append("⚠️ GreatSQL 未配置，跳过签到")
     
     # PGFans 签到
-    if pgfans_client:
-        print(f"\n[{fmt_now()}] === 开始 PGFans 签到 ===\n")
-        try:
-            res = pgfans_client.checkin()
-            log_msg = f"[{fmt_now()}] [成功] PGFans 签到成功：{res}"
-            print(log_msg)
-            if isinstance(res, dict):
-                message = res.get("message", "")
-                details = res.get("details", "")
-                pgfans_result = f"✅ PGFans {message}！\n　　• {details}"
-            else:
-                pgfans_result = f"✅ PGFans 签到成功：{res}"
-        except Exception as e:
-            log_msg = f"[{fmt_now()}] [失败] PGFans 签到失败：{e}"
-            print(log_msg)
-            pgfans_result = f"❌ PGFans 签到失败：{str(e)}"
+    pgfans_results = []
+    if pgfans_clients:
+        for idx, pgfans_client in enumerate(pgfans_clients, 1):
+            print(f"\n[{fmt_now()}] === 开始第 {idx} 个 PGFans 账号签到 ===\n")
+            try:
+                res = pgfans_client.checkin()
+                log_msg = f"[{fmt_now()}] [成功] PGFans 第{idx}个账号签到成功：{res}"
+                print(log_msg)
+                if isinstance(res, dict):
+                    message = res.get("message", "")
+                    details = res.get("details", "")
+                    pgfans_results.append(f"✅ 第{idx}个账号：{message}，{details}")
+                else:
+                    pgfans_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] PGFans 第{idx}个账号签到失败：{e}"
+                print(log_msg)
+                pgfans_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
     else:
         print(f"\n[{fmt_now()}] === 跳过 PGFans 签到（未配置） ===\n")
-        pgfans_result = "⚠️ PGFans 未配置，跳过签到"
+        pgfans_results.append("⚠️ PGFans 未配置，跳过签到")
     
     # MoDB 墨天轮签到
     modb_results = []
@@ -1570,8 +1592,12 @@ def run_one_day(kb_client, kb_times, tidb_client, oceanbase_client, greatsql_cli
     if push_token:
         today = bj_time().strftime("%Y-%m-%d")
         title = f"论坛签到任务结果 - {today}"
+        tidb_content = f"<ul>{''.join([f'<li>{item}</li>' for item in tidb_results])}</ul>" if tidb_results else "<p>⚠️ TiDB 未配置，跳过签到</p>"
+        oceanbase_content = f"<ul>{''.join([f'<li>{item}</li>' for item in oceanbase_results])}</ul>" if oceanbase_results else "<p>⚠️ OceanBase 未配置，跳过签到</p>"
+        greatsql_content = f"<ul>{''.join([f'<li>{item}</li>' for item in greatsql_results])}</ul>" if greatsql_results else "<p>⚠️ GreatSQL 未配置，跳过签到</p>"
+        pgfans_content = f"<ul>{''.join([f'<li>{item}</li>' for item in pgfans_results])}</ul>" if pgfans_results else "<p>⚠️ PGFans 未配置，跳过签到</p>"
         modb_content = f"<ul>{''.join([f'<li>{item}</li>' for item in modb_results])}</ul>" if modb_results else "<p>⚠️ MoDB 未配置，跳过签到</p>"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3><p>{tidb_result}</p><h3>OceanBase 签到</h3><p>{oceanbase_result}</p><h3>GreatSQL 签到</h3><p>{greatsql_result}</p><h3>PGFans 签到</h3><p>{pgfans_result}</p><h3>MoDB 墨天轮签到</h3>{modb_content}"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3>{tidb_content}<h3>OceanBase 签到</h3>{oceanbase_content}<h3>GreatSQL 签到</h3>{greatsql_content}<h3>PGFans 签到</h3>{pgfans_content}<h3>MoDB 墨天轮签到</h3>{modb_content}"
         push_plus(push_token, title, content)
         print(f"[{fmt_now()}] 结果推送完成")
 
@@ -1604,23 +1630,33 @@ if __name__ == "__main__":
     
     push_token = cfg.get("PUSH_PLUS_TOKEN")
     
-    for u,p in zip(kb_user, kb_pwd):
-        # 创建 GreatSQL 客户端（如果配置了的话）
-        greatsql_client = None
-        if greatsql_users and greatsql_pwds and len(greatsql_users) > 0 and len(greatsql_pwds) > 0:
-            greatsql_client = GreatSQLClient(greatsql_users[0], greatsql_pwds[0])
-        
-        # 创建 PGFans 客户端（如果配置了的话）
-        pgfans_client = None
-        if pgfans_users and pgfans_pwds and len(pgfans_users) > 0 and len(pgfans_pwds) > 0:
-            pgfans_client = PGFansClient(pgfans_users[0], pgfans_pwds[0])
-        
-        # 创建 MoDB 墨天轮客户端列表（如果配置了的话）
-        modb_clients = []
-        if modb_users and modb_pwds and len(modb_users) > 0 and len(modb_pwds) > 0:
-            for modb_user, modb_pwd in zip(modb_users, modb_pwds):
-                if modb_user.strip() and modb_pwd.strip():  # 确保用户名和密码不为空
-                    modb_clients.append(MoDBClient(modb_user.strip(), modb_pwd.strip()))
-        
-        run_one_day(KingbaseClient(u,p,article), kb_times, TiDBClient(tidb_user,tidb_pwd), OceanBaseClient(ob_user,ob_pwd), greatsql_client, pgfans_client, modb_clients, push_token)
+    # 创建所有论坛的客户端列表
+    kingbase_clients = []
+    for u, p in zip(kb_user, kb_pwd):
+        kingbase_clients.append(KingbaseClient(u, p, article))
+    
+    tidb_clients = [TiDBClient(tidb_user, tidb_pwd)]
+    
+    oceanbase_clients = [OceanBaseClient(ob_user, ob_pwd)]
+    
+    greatsql_clients = []
+    if greatsql_users and greatsql_pwds:
+        for u, p in zip(greatsql_users, greatsql_pwds):
+            if u.strip() and p.strip():
+                greatsql_clients.append(GreatSQLClient(u.strip(), p.strip()))
+    
+    pgfans_clients = []
+    if pgfans_users and pgfans_pwds:
+        for u, p in zip(pgfans_users, pgfans_pwds):
+            if u.strip() and p.strip():
+                pgfans_clients.append(PGFansClient(u.strip(), p.strip()))
+    
+    modb_clients = []
+    if modb_users and modb_pwds:
+        for u, p in zip(modb_users, modb_pwds):
+            if u.strip() and p.strip():
+                modb_clients.append(MoDBClient(u.strip(), p.strip()))
+    
+    # 执行签到任务（只执行一次，支持所有论坛的多账号）
+    run_one_day(kingbase_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_clients, pgfans_clients, modb_clients, push_token)
         
