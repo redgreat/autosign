@@ -1388,6 +1388,350 @@ class MoDBClient:
         
         return result
 
+class GbaseClient:
+    def __init__(self, username, password, pushplus_token=None):
+        self.username = username
+        self.password = password
+        self.pushplus_token = pushplus_token
+        self.session = requests.Session()
+        self.csrf_token = None
+        self.gbase_satoken = None
+        
+        # 设置通用请求头
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:142.0) Gecko/20100101 Firefox/142.0',
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+        })
+    
+    def log(self, message, level='INFO'):
+        """日志输出"""
+        timestamp = fmt_now()
+        print(f"[{timestamp}] [{level}] {message}")
+    
+    def send_notification(self, title, content):
+        """PushPlus消息推送"""
+        if not self.pushplus_token:
+            self.log("⚠️ 未配置PushPlus Token，跳过消息推送")
+            return
+        
+        attempts = 3
+        pushplus_url = "http://www.pushplus.plus/send"
+        
+        # 在标题和内容中加入用户名称
+        title_with_user = "[{}] {}".format(self.username, title)
+        content_with_user = "👤 账号: {}\n\n{}".format(self.username, content)
+        
+        for attempt in range(attempts):
+            try:
+                response = requests.post(
+                    pushplus_url,
+                    data=json.dumps({
+                        "token": self.pushplus_token,
+                        "title": title_with_user,
+                        "content": content_with_user
+                    }).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'},
+                    timeout=10
+                )
+                response.raise_for_status()
+                self.log("✅ PushPlus响应: {}".format(response.text))
+                break
+            except requests.exceptions.RequestException as e:
+                self.log("❌ PushPlus推送失败: {}".format(e), 'ERROR')
+                if attempt < attempts - 1:
+                    sleep_time = random.randint(30, 60)
+                    self.log("将在 {} 秒后重试...".format(sleep_time))
+                    time.sleep(sleep_time)
+    
+    def get_csrf_token(self):
+        """获取CSRF Token"""
+        try:
+            self.log("获取CSRF Token...")
+            url = "https://www.gbase.cn/user-center/api/auth/csrf"
+            
+            headers = {
+                'Referer': 'https://www.gbase.cn/user-center/login',
+                'Content-Type': 'application/json',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Priority': 'u=4'
+            }
+            
+            response = self.session.get(url, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            self.csrf_token = data.get('csrfToken')
+            
+            if not self.csrf_token:
+                raise RuntimeError("获取CSRF Token失败")
+            
+            self.log(f"✅ 获取CSRF Token成功: {self.csrf_token[:20]}...")
+            return True
+            
+        except Exception as e:
+            self.log(f"获取CSRF Token失败: {str(e)}", 'ERROR')
+            raise
+    
+    def login(self):
+        """登录 Gbase 论坛"""
+        try:
+            self.log("尝试登录 Gbase...")
+            
+            # 先获取CSRF Token
+            self.get_csrf_token()
+            
+            # 登录请求
+            login_url = "https://www.gbase.cn/user-center/api/auth/callback/credentials"
+            
+            headers = {
+                'Referer': 'https://www.gbase.cn/user-center/login',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Origin': 'https://www.gbase.cn',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Priority': 'u=4'
+            }
+            
+            # 构造登录数据
+            login_data = {
+                'type': 'undefined',
+                'username': self.username,
+                'password': self.password,
+                'verifyEmail': '',
+                'redirect': 'true',
+                'callbackUrl': '/user-center',
+                'csrfToken': self.csrf_token,
+                'json': 'true'
+            }
+            
+            # 发送登录请求
+            response = self.session.post(
+                login_url, 
+                data=urlencode(login_data),
+                headers=headers,
+                allow_redirects=False
+            )
+            
+            # 检查登录响应状态
+            if response.status_code not in [200, 302]:
+                raise RuntimeError(f"登录请求失败，状态码: {response.status_code}")
+            
+            # 检查登录是否成功 - 通过检查cookies中的session token
+            session_token = None
+            for cookie in self.session.cookies:
+                if 'session-token' in cookie.name:
+                    session_token = cookie.value
+                    break
+                elif 'gbase-satoken' in cookie.name:
+                    self.gbase_satoken = cookie.value
+            
+            if not session_token and not self.gbase_satoken:
+                # 尝试从响应中获取token信息
+                if response.status_code in [302, 200]:
+                    self.log("登录请求已发送，检查认证状态...")
+                    # 可能需要额外的验证步骤
+                else:
+                    raise RuntimeError(f"登录失败，状态码: {response.status_code}")
+            
+            # 从cookies中提取gbase-satoken
+            for cookie in self.session.cookies:
+                if cookie.name == 'gbase-satoken':
+                    self.gbase_satoken = cookie.value
+                    break
+            
+            if self.gbase_satoken:
+                self.log("✅ Gbase 登录成功")
+                return True
+            else:
+                # 尝试通过session API获取accessToken
+                self.log("尝试通过session API获取accessToken...")
+                time.sleep(2)
+                
+                # 调用session API获取accessToken
+                session_api_url = "https://www.gbase.cn/user-center/api/auth/session"
+                headers = {
+                    'Referer': 'https://www.gbase.cn/user-center/membership/points',
+                    'Content-Type': 'application/json',
+                    'Sec-Fetch-Dest': 'empty',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Site': 'same-origin',
+                    'Priority': 'u=4'
+                }
+                
+                response = self.session.get(session_api_url, headers=headers)
+                
+                # 检查session API响应
+                if response.status_code != 200:
+                    self.log(f"Session API请求失败，状态码: {response.status_code}")
+                
+                if response.status_code == 200:
+                    try:
+                        session_data = response.json()
+                        access_token = session_data.get('accessToken')
+                        if access_token:
+                            self.gbase_satoken = access_token
+                            self.log(f"✅ 通过Session API获取到accessToken: {access_token[:20]}...")
+                            self.log("✅ Gbase 登录成功")
+                            return True
+                        else:
+                            self.log("Session API响应中未找到accessToken")
+                    except Exception as e:
+                        self.log(f"解析Session API响应失败: {str(e)}")
+                
+                raise RuntimeError("登录失败：未获取到有效的认证token")
+            
+        except Exception as e:
+            self.log(f"登录异常: {str(e)}", 'ERROR')
+            raise
+    
+    def get_user_info(self):
+        """获取用户信息"""
+        try:
+            self.log("获取用户信息...")
+            
+            # 用户信息请求
+            user_info_url = "https://www.gbase.cn/gbase-gateway/gbase-community-service/account/me"
+            
+            headers = {
+                'Referer': 'https://www.gbase.cn/user-center/membership/points',
+                'Content-Type': 'application/json; charset=utf-8',
+                'gbase-satoken': f'Bearer {self.gbase_satoken}',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Priority': 'u=4'
+            }
+            
+            response = self.session.get(user_info_url, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get('code') == 200:
+                data = result.get('data', {})
+                user_info = {
+                    'account': data.get('account', ''),
+                    'charmPoints': data.get('charmPoints', 0),
+                    'checkInContinuousDays': data.get('checkInContinuousDays', 0),
+                    'checkInCumulativeDays': data.get('checkInCumulativeDays', 0),
+                    'checkInLastTime': data.get('checkInLastTime', ''),
+                    'userLevelName': data.get('userLevelName', '')
+                }
+                self.log(f"✅ 获取用户信息成功: 吉币{user_info['charmPoints']}，连续签到{user_info['checkInContinuousDays']}天")
+                return user_info
+            else:
+                self.log(f"获取用户信息失败: {result.get('msg', '未知错误')}")
+                return None
+                
+        except Exception as e:
+            self.log(f"获取用户信息异常: {str(e)}", 'ERROR')
+            return None
+    
+    def checkin(self):
+        """执行签到"""
+        if not self.gbase_satoken:
+            self.login()
+        
+        try:
+            self.log("开始执行签到...")
+            
+            # 签到请求
+            checkin_url = "https://www.gbase.cn/gbase-gateway/gbase-community-service/check-in/add"
+            
+            headers = {
+                'Referer': 'https://www.gbase.cn/user-center/membership/check-in',
+                'Content-Type': 'application/json; charset=utf-8',
+                'gbase-satoken': f'Bearer {self.gbase_satoken}',
+                'Origin': 'https://www.gbase.cn',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Priority': 'u=4'
+            }
+            
+            # 发送签到请求
+            response = self.session.post(
+                checkin_url,
+                json={},
+                headers=headers
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get('code') == 200:
+                msg = result.get('msg', '签到成功')
+                self.log(f"✅ 签到成功: {msg}")
+                return msg
+            else:
+                error_msg = result.get('msg', '签到失败')
+                if '已签到' in error_msg or '重复' in error_msg:
+                    self.log(f"ℹ️ {error_msg}")
+                    return error_msg
+                else:
+                    raise RuntimeError(f"签到失败: {error_msg}")
+            
+        except Exception as e:
+            self.log(f"签到失败: {str(e)}", 'ERROR')
+            raise
+    
+    def run_checkin(self):
+        """执行签到任务"""
+        self.log("=== 开始 Gbase 论坛签到任务 ===")
+        
+        try:
+            result = self.checkin()
+            
+            # 获取用户信息
+            user_info = self.get_user_info()
+            
+            today = bj_time().strftime("%Y-%m-%d")
+            title = f"Gbase 论坛签到结果 - {today}"
+            
+            # 构建推送内容
+            if user_info:
+                content = f"✅ 签到成功: {result}\n\n" + \
+                         f"📊 账号信息:\n" + \
+                         f"• 账号: {user_info['account']}\n" + \
+                         f"• 总吉币: {user_info['charmPoints']}\n" + \
+                         f"• 连续签到: {user_info['checkInContinuousDays']} 天\n" + \
+                         f"• 累计签到: {user_info['checkInCumulativeDays']} 天\n" + \
+                         f"• 等级: {user_info['userLevelName']}\n" + \
+                         f"• 最后签到: {user_info['checkInLastTime']}"
+            else:
+                content = f"✅ 签到成功: {result}"
+            
+            self.log("=== 任务完成，准备推送结果 ===")
+            self.send_notification(title, content)
+            
+            self.log("Gbase 签到任务完成")
+            return {
+                "success": True,
+                "message": result,
+                "user_info": user_info
+            }
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.log(f"签到任务失败: {error_msg}", 'ERROR')
+            
+            today = bj_time().strftime("%Y-%m-%d")
+            title = f"Gbase 论坛签到失败 - {today}"
+            content = f"❌ 签到失败: {error_msg}"
+            
+            self.send_notification(title, content)
+            
+            return {
+                "success": False,
+                "message": error_msg
+            }
+
 def push_plus(token, title, content):
     requesturl = f"http://www.pushplus.plus/send"
     data = {
@@ -1407,7 +1751,7 @@ def push_plus(token, title, content):
     except:
         print("pushplus推送异常")
 
-def run_one_day(kb_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_clients, pgfans_clients, modb_clients, push_token):
+def run_one_day(kb_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_clients, pgfans_clients, modb_clients, gbase_clients, push_token):
     # 初始化结果变量
     kb_results = []
     tidb_result = ""
@@ -1588,6 +1932,35 @@ def run_one_day(kb_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_
         print(f"\n[{fmt_now()}] === 跳过 MoDB 签到（未配置） ===\n")
         modb_results.append("⚠️ MoDB 未配置，跳过签到")
     
+    # GBase 签到
+    gbase_results = []
+    if gbase_clients:
+        for idx, gbase_client in enumerate(gbase_clients, 1):
+            print(f"\n[{fmt_now()}] === 开始第 {idx} 个 GBase 账号签到 ===\n")
+            try:
+                res = gbase_client.run_checkin()
+                log_msg = f"[{fmt_now()}] [成功] GBase 第{idx}个账号签到成功：{res}"
+                print(log_msg)
+                if isinstance(res, dict):
+                    if res.get('success'):
+                        message = res.get('message', '签到成功')
+                        user_info = res.get('user_info')
+                        if user_info:
+                            gbase_results.append(f"✅ 第{idx}个账号：{message}，总吉币: {user_info['charmPoints']}，连续签到: {user_info['checkInContinuousDays']}天")
+                        else:
+                            gbase_results.append(f"✅ 第{idx}个账号：{message}")
+                    else:
+                        gbase_results.append(f"❌ 第{idx}个账号：签到失败 - {res.get('message', '未知错误')}")
+                else:
+                    gbase_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] GBase 第{idx}个账号签到失败：{e}"
+                print(log_msg)
+                gbase_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+    else:
+        print(f"\n[{fmt_now()}] === 跳过 GBase 签到（未配置） ===\n")
+        gbase_results.append("⚠️ GBase 未配置，跳过签到")
+    
     print(f"\n[{fmt_now()}] === 任务完成，准备推送结果 ===\n")
     if push_token:
         today = bj_time().strftime("%Y-%m-%d")
@@ -1597,7 +1970,8 @@ def run_one_day(kb_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_
         greatsql_content = f"<ul>{''.join([f'<li>{item}</li>' for item in greatsql_results])}</ul>" if greatsql_results else "<p>⚠️ GreatSQL 未配置，跳过签到</p>"
         pgfans_content = f"<ul>{''.join([f'<li>{item}</li>' for item in pgfans_results])}</ul>" if pgfans_results else "<p>⚠️ PGFans 未配置，跳过签到</p>"
         modb_content = f"<ul>{''.join([f'<li>{item}</li>' for item in modb_results])}</ul>" if modb_results else "<p>⚠️ MoDB 未配置，跳过签到</p>"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3>{tidb_content}<h3>OceanBase 签到</h3>{oceanbase_content}<h3>GreatSQL 签到</h3>{greatsql_content}<h3>PGFans 签到</h3>{pgfans_content}<h3>MoDB 墨天轮签到</h3>{modb_content}"
+        gbase_content = f"<ul>{''.join([f'<li>{item}</li>' for item in gbase_results])}</ul>" if gbase_results else "<p>⚠️ GBase 未配置，跳过签到</p>"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3>{tidb_content}<h3>OceanBase 签到</h3>{oceanbase_content}<h3>GreatSQL 签到</h3>{greatsql_content}<h3>PGFans 签到</h3>{pgfans_content}<h3>MoDB 墨天轮签到</h3>{modb_content}<h3>GBase 签到</h3>{gbase_content}"
         push_plus(push_token, title, content)
         print(f"[{fmt_now()}] 结果推送完成")
 
@@ -1628,6 +2002,10 @@ if __name__ == "__main__":
     modb_users = os.environ.get("MODB_USER", "").split("#") if os.environ.get("MODB_USER") else []
     modb_pwds = os.environ.get("MODB_PWD", "").split("#") if os.environ.get("MODB_PWD") else []
     
+    # GBase 配置
+    gbase_users = os.environ.get("GBASE_USER", "").split("#") if os.environ.get("GBASE_USER") else []
+    gbase_pwds = os.environ.get("GBASE_PWD", "").split("#") if os.environ.get("GBASE_PWD") else []
+    
     push_token = cfg.get("PUSH_PLUS_TOKEN")
     
     # 创建所有论坛的客户端列表
@@ -1657,6 +2035,12 @@ if __name__ == "__main__":
             if u.strip() and p.strip():
                 modb_clients.append(MoDBClient(u.strip(), p.strip()))
     
+    gbase_clients = []
+    if gbase_users and gbase_pwds:
+        for u, p in zip(gbase_users, gbase_pwds):
+            if u.strip() and p.strip():
+                gbase_clients.append(GbaseClient(u.strip(), p.strip(), push_token))
+    
     # 执行签到任务（只执行一次，支持所有论坛的多账号）
-    run_one_day(kingbase_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_clients, pgfans_clients, modb_clients, push_token)
+    run_one_day(kingbase_clients, kb_times, tidb_clients, oceanbase_clients, greatsql_clients, pgfans_clients, modb_clients, gbase_clients, push_token)
         

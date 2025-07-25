@@ -33,6 +33,8 @@ jobs:
             PGFANS_PWD: ${{ secrets.PGFANS_PWD }}
             MODB_USER: ${{ secrets.MODB_USER }}
             MODB_PWD: ${{ secrets.MODB_PWD }}
+            GBASE_USER: ${{ secrets.GBASE_USER }}
+            GBASE_PWD: ${{ secrets.GBASE_PWD }}
         run: |
           pip3 install requests pytz pycryptodome ddddocr
-          python3 kingbase_tidb_task.py
+          python3 all_checkin.py
