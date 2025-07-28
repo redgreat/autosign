@@ -35,8 +35,7 @@ jobs:
             MODB_PWD: ${{ secrets.MODB_PWD }}
             GBASE_USER: ${{ secrets.GBASE_USER }}
             GBASE_PWD: ${{ secrets.GBASE_PWD }}
-            FNOS_USER: ${{ secrets.FNOS_USER }}
-            FNOS_PWD: ${{ secrets.FNOS_PWD }}
+            
         run: |
           pip3 install requests pytz pycryptodome ddddocr
           python3 all_checkin.py
