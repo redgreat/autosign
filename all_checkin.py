@@ -1135,9 +1135,11 @@ class PGFansClient:
             }
 
 class MoDBClient:
-    def __init__(self, username, password):
-        self.username = username
-        self.password = password
+    """墨天轮论坛客户端"""
+    
+    def __init__(self, user, pwd):
+        self.user = user
+        self.pwd = pwd
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -1149,197 +1151,244 @@ class MoDBClient:
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin'
         })
-        self.user_id = None
-        self.token = None
-    
+        self.base_url = 'https://www.modb.pro/api/'
+        self.user_info = None
+        
     def log(self, message):
-        pass
-    
+        """记录日志"""
+        print(f"[{fmt_now()}] {message}")
+        
     def generate_uuid(self):
-        """生成UUID"""
-        return str(uuid.uuid4())
-    
-    def aes_encrypt(self, data, key):
-        """AES加密"""
+        """生成UUID（模拟JavaScript中的UUID生成逻辑）"""
+        chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+        uuid_chars = []
+        
+        for i in range(36):
+            if i in [8, 13, 18, 23]:
+                uuid_chars.append('-')
+            elif i == 14:
+                uuid_chars.append('4')
+            elif i == 19:
+                # (3 & random) | 8
+                random_char = chars[int(time.time() * 1000000) % 16]
+                uuid_chars.append(chars[(3 & ord(random_char)) | 8])
+            else:
+                uuid_chars.append(chars[int(time.time() * 1000000 + i) % 16])
+                
+        return ''.join(uuid_chars)
+        
+    def aes_encrypt(self, plaintext, key, iv):
+        """AES加密（模拟JavaScript中的AES加密）"""
         try:
-            # 将密钥转换为字节
-            key_bytes = key.encode('utf-8')[:16].ljust(16, b'\0')
+            # 确保key和iv的长度
+            key = key.ljust(16, '\0')[:16].encode('utf-8')
+            iv = iv.ljust(16, '\0')[:16].encode('utf-8')
             
             # 创建AES加密器
-            cipher = AES.new(key_bytes, AES.MODE_ECB)
+            cipher = AES.new(key, AES.MODE_CBC, iv)
             
-            # 对数据进行填充并加密
-            padded_data = pad(data.encode('utf-8'), AES.block_size)
-            encrypted = cipher.encrypt(padded_data)
+            # 填充明文
+            padded_text = pad(plaintext.encode('utf-8'), AES.block_size)
+            
+            # 加密
+            encrypted = cipher.encrypt(padded_text)
             
             # 返回base64编码的结果
             return base64.b64encode(encrypted).decode('utf-8')
+            
         except Exception as e:
             self.log(f"AES加密失败: {str(e)}")
             return None
-    
+            
     def get_timestamp_info(self):
         """获取时间戳信息"""
         try:
-            response = self.session.get('https://www.modb.pro/api/user/getTimestampInfo')
-            print(response.text)
+            url = self.base_url + 'env/clock'
+            response = self.session.get(url)
+            
             if response.status_code == 200:
                 data = response.json()
                 if data.get('success'):
-                    return data.get('data', {})
+                    return data.get('operateCallBackObj')
+            
+            self.log(f"获取时间戳信息失败: {response.text}")
             return None
+            
         except Exception as e:
-            self.log(f"获取时间戳信息失败: {str(e)}")
+            self.log(f"获取时间戳信息异常: {str(e)}")
             return None
-    
-    def generate_req_key(self, timestamp_info):
-        """生成请求密钥"""
+            
+    def generate_req_key(self):
+        """生成reqKey（模拟JavaScript中的reqKey生成逻辑）"""
         try:
+            # 获取时间戳信息
+            timestamp_info = self.get_timestamp_info()
             if not timestamp_info:
                 return None
+                
+            # 生成UUID
+            uuid_str = self.generate_uuid()
             
-            timestamp = timestamp_info.get('timestamp')
-            nonce = timestamp_info.get('nonce')
+            # 构造加密内容
+            v = f"{uuid_str}:"
+            c = str(timestamp_info)  # 时间戳信息
             
-            if not timestamp or not nonce:
+            # AES加密参数（从JavaScript代码中提取）
+            key = "emcs-app-request"  # n
+            iv = "xqgb1vda11s0e94g"   # r
+            
+            # 执行AES加密
+            req_key = self.aes_encrypt(v + c, key, iv)
+            
+            if req_key:
+                self.log(f"生成reqKey成功")
+                return req_key
+            else:
+                self.log("生成reqKey失败")
                 return None
-            
-            # 生成reqKey
-            req_key = f"{timestamp}{nonce}"
-            return req_key
+                
         except Exception as e:
-            self.log(f"生成请求密钥失败: {str(e)}")
+            self.log(f"生成reqKey异常: {str(e)}")
             return None
-    
+            
     def login(self):
         """登录"""
         try:
-            # 获取时间戳信息
-            timestamp_info = self.get_timestamp_info()
-            if not timestamp_info:
-                return {'success': False, 'message': '获取时间戳信息失败', 'total_points': 0}
+            self.log("开始登录...")
             
-            # 生成reqKey
-            req_key = self.generate_req_key(timestamp_info)
-            if not req_key:
-                return {'success': False, 'message': '生成请求密钥失败', 'total_points': 0}
+            url = self.base_url + 'login'
             
-            # 加密密码
-            encrypted_password = self.aes_encrypt(self.password, req_key)
-            if not encrypted_password:
-                return {'success': False, 'message': '密码加密失败', 'total_points': 0}
-            
-            # 登录请求
             login_data = {
-                'username': self.username,
-                'password': encrypted_password,
-                'uuid': self.generate_uuid()
+                'phoneNum': self.user,
+                'password': self.pwd
             }
             
-            response = self.session.post('https://www.modb.pro/api/user/login', json=login_data)
+            headers = {
+                'Content-Type': 'application/json;charset=UTF-8',
+                'Referer': 'https://www.modb.pro/login'
+            }
+            
+            response = self.session.post(url, json=login_data, headers=headers)
             
             if response.status_code == 200:
                 data = response.json()
                 if data.get('success'):
-                    user_data = data.get('data', {})
-                    self.user_id = user_data.get('id')
-                    self.token = user_data.get('token')
-                    self.log(f"登录成功，用户ID: {self.user_id}")
-                    return True
-                else:
-                    self.log(f"登录失败: {data.get('message', '未知错误')}")
-                    return False
-            else:
-                self.log(f"登录请求失败，状态码: {response.status_code}")
-                return False
+                    self.user_info = data.get('operateCallBackObj', {})
+                    
+                    # 从响应头中提取token
+                    token = response.headers.get('Authorization')
+                    
+                    if token:
+                        # 设置Authorization头
+                        self.session.headers['Authorization'] = token
+                        return True
+                        
+            return False
+                
         except Exception as e:
             self.log(f"登录异常: {str(e)}")
             return False
-    
-    def checkin(self):
-        """签到"""
-        try:
-            # 先登录
-            if not self.login():
-                return {'success': False, 'message': '登录失败', 'total_points': 0}
             
-            # 获取时间戳信息
-            timestamp_info = self.get_timestamp_info()
-            if not timestamp_info:
-                return {'success': False, 'message': '获取时间戳信息失败', 'total_points': 0}
+    def checkin(self):
+        """执行签到"""
+        try:
+            # 先确保已登录
+            if not self.login():
+                return {
+                    'success': False,
+                    'message': '登录失败',
+                    'total_points': 0
+                }
+                
+            self.log("开始执行签到...")
             
             # 生成reqKey
-            req_key = self.generate_req_key(timestamp_info)
+            req_key = self.generate_req_key()
             if not req_key:
-                return {'success': False, 'message': '生成请求密钥失败', 'total_points': 0}
-            
+                return {
+                    'success': False,
+                    'message': '生成reqKey失败',
+                    'total_points': 0
+                }
+                
             # 签到请求
+            url = self.base_url + 'user/dailyCheck'
+            
             checkin_data = {
                 'reqKey': req_key
             }
             
-            response = self.session.post('https://www.modb.pro/api/user/checkIn', json=checkin_data)
+            headers = {
+                'Content-Type': 'application/json;charset=UTF-8',
+                'Referer': 'https://www.modb.pro/u/checkin'
+            }
+            
+            response = self.session.post(url, json=checkin_data, headers=headers)
             
             if response.status_code == 200:
                 data = response.json()
-                message = data.get('message', '')
+                # 获取用户详情以获取总墨值
+                user_detail = self.get_user_detail()
+                total_points = user_detail.get('point', 0) if user_detail else 0
                 
-                # 检查是否已经签到
-                if '已经签到' in message or '重复签到' in message or '签过到' in message:
-                    # 获取用户详情
-                    user_detail = self.get_user_detail()
-                    total_points = user_detail.get('point', 0) if user_detail else 0
-                    
-                    return {
+                if data.get('success'):
+                    result = {
                         'success': True,
-                        'message': message,
+                        'message': '签到成功',
                         'total_points': total_points,
-                        'already_checked': True
+                        'checkin_info': data.get('operateCallBackObj', {})
                     }
-                elif data.get('success'):
-                    # 签到成功
-                    checkin_data = data.get('data', {})
-                    points = checkin_data.get('point', 0)
                     
-                    # 获取用户详情
-                    user_detail = self.get_user_detail()
-                    total_points = user_detail.get('point', 0) if user_detail else 0
-                    
-                    return {
-                        'success': True,
-                        'message': f'签到成功，获得 {points} 墨值',
-                        'total_points': total_points,
-                        'points': points
-                    }
+                    self.log(f"签到成功！当前总墨值: {total_points}")
+                    return result
                 else:
-                    return {
-                        'success': False,
-                        'message': message or '签到失败',
-                        'total_points': 0
-                    }
+                    error_msg = data.get('operateMessage', '未知错误')
+                    if '已经签到' in error_msg or '重复签到' in error_msg or '签过到' in error_msg:
+                        # 已经签到过了，也算作成功
+                        result = {
+                            'success': True,
+                            'message': '签到成功',
+                            'total_points': total_points,
+                            'already_checked': True
+                        }
+                        
+                        self.log(f"今天已经签到过了，当前总墨值: {total_points}")
+                        return result
+                    else:
+                        return {
+                            'success': False,
+                            'message': f'签到失败: {error_msg}',
+                            'total_points': total_points
+                        }
             else:
                 return {
                     'success': False,
                     'message': f'签到请求失败，状态码: {response.status_code}',
                     'total_points': 0
                 }
+                
         except Exception as e:
-            self.log(f"签到异常: {str(e)}")
+            self.log(f"签到失败: {str(e)}")
             return {
                 'success': False,
-                'message': f'签到异常: {str(e)}',
+                'message': str(e),
                 'total_points': 0
             }
-    
+            
     def get_user_detail(self):
         """获取用户详情"""
         try:
-            response = self.session.get('https://www.modb.pro/api/user/detail')
+            url = self.base_url + 'user/detail'
+            
+            response = self.session.get(url)
+            
             if response.status_code == 200:
                 data = response.json()
-                if data.get('success'):
-                    return data.get('data', {})
+                # 直接返回用户详情数据，其中包含 point 字段
+                return data
+                    
             return None
+            
         except Exception as e:
             self.log(f"获取用户详情失败: {str(e)}")
             return None
@@ -1352,7 +1401,7 @@ class MoDBClient:
             if result.get('already_checked'):
                 message = f"今天已经签到过了，当前总墨值: {result['total_points']}"
             else:
-                message = f"签到成功，获得 {result.get('points', 0)} 墨值，当前总墨值: {result['total_points']}"
+                message = f"签到成功，当前总墨值: {result['total_points']}"
             print(message)
         else:
             message = f"签到失败: {result['message']}"
