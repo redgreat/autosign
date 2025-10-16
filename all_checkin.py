@@ -1444,7 +1444,7 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
         pgfans_content = f"<ul>{''.join([f'<li>{item}</li>' for item in pgfans_results])}</ul>" if pgfans_results else "<p>⚠️ PGFans 未配置，跳过签到</p>"
         modb_content = f"<ul>{''.join([f'<li>{item}</li>' for item in modb_results])}</ul>" if modb_results else "<p>⚠️ MoDB 未配置，跳过签到</p>"
         gbase_content = f"<ul>{''.join([f'<li>{item}</li>' for item in gbase_results])}</ul>" if gbase_results else "<p>⚠️ GBase 未配置，跳过签到</p>"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}</ul><h3>TiDB 签到</h3>{tidb_content}<h3>OceanBase 签到</h3>{oceanbase_content}<h3>GreatSQL 签到</h3>{greatsql_content}<h3>PGFans 签到</h3>{pgfans_content}<h3>MoDB 墨天轮签到</h3>{modb_content}<h3>GBase 签到</h3>{gbase_content}"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}<h3>OceanBase 签到</h3>{oceanbase_content}<h3>PGFans 签到</h3>{pgfans_content}<h3>MoDB 墨天轮签到</h3>{modb_content}<h3>GBase 签到</h3>{gbase_content}"
         push_plus(push_token, title, content)
         print(f"[{fmt_now()}] 结果推送完成")
 

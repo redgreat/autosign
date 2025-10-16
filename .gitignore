@@ -176,3 +176,4 @@ cython_debug/
 CONFIG
 script/
 api/
+.DS_Store
