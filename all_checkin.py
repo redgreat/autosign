@@ -102,7 +102,7 @@ class KingbaseClient:
             
             body = {
                 "articleId": self.article_id,
-                "commentContent": "<p><img src=\"/UEditorPlus/dialogs/emotion/./custom_emotion/emotion_02.png\"/></p>"
+                "commentContent": f"<p><img src=\"/UEditorPlus/dialogs/emotion/./custom_emotion/emotion_02.png\"/> {random.randint(1, 99)}</p>"
             }
             
             url = "https://bbs.kingbase.com.cn/web-api/web/forum/comment"
