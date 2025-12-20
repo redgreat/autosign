@@ -2,7 +2,7 @@ name: 签到
 
 on:
   schedule:
-    - cron: '46 0 20 12 *'
+    - cron: '33 1 21 12 *'
   workflow_dispatch:
 
 jobs:
