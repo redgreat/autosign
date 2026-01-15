@@ -29,6 +29,8 @@ class KingbaseClient:
     def login(self):
         try:
             print(f"[登录] 尝试登录 Kingbase...")
+            print(f"[调试] 用户名: {self.user[:3]}***, 长度: {len(self.user)}")
+            print(f"[调试] 密码长度: {len(self.pwd)}, 是否包含空格: {' ' in self.pwd}")
             login_url = "https://bbs.kingbase.com.cn/web-api/web/system/user/loginWeb"
             
             login_data = {
@@ -1477,7 +1479,8 @@ if __name__ == "__main__":
     # 创建所有论坛的客户端列表
     kingbase_clients = []
     for u, p in zip(kb_user, kb_pwd):
-        kingbase_clients.append(KingbaseClient(u, p, article))
+        if u.strip() and p.strip():
+            kingbase_clients.append(KingbaseClient(u.strip(), p.strip(), article))
 
     oceanbase_clients = [OceanBaseClient(ob_user, ob_pwd)]
 

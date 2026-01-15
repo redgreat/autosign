@@ -77,6 +77,8 @@ class KingbaseClient:
         """登录 Kingbase 论坛"""
         try:
             self.log("尝试登录 Kingbase...")
+            self.log(f"[调试] 用户名: {self.user[:3]}***, 长度: {len(self.user)}")
+            self.log(f"[调试] 密码长度: {len(self.pwd)}, 是否包含空格: {' ' in self.pwd}")
             login_url = "https://bbs.kingbase.com.cn/web-api/web/system/user/loginWeb"
             
             login_data = {
@@ -256,6 +258,8 @@ def main():
         
         # 处理多账号情况
         for user, pwd in zip(kb_users, kb_pwds):
+            user = user.strip()
+            pwd = pwd.strip()
             if not user or not pwd:
                 continue
             
