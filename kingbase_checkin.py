@@ -12,6 +12,8 @@ import os
 import requests
 import pytz
 from datetime import datetime
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 
 
 def bj_time():
@@ -32,6 +34,29 @@ class KingbaseClient:
         self.token = None
         self.pushplus_token = pushplus_token
         self.user_name = user
+    
+    def encrypt_password(self, password):
+        """使用 AES-ECB 加密密码"""
+        try:
+            # Kingbase 使用的固定密钥
+            key = "K1ngbase@2024001".encode('utf-8')
+            
+            # 创建 AES 加密器（ECB 模式）
+            cipher = AES.new(key, AES.MODE_ECB)
+            
+            # 填充密码到 16 字节的倍数
+            padded_password = pad(password.encode('utf-8'), AES.block_size)
+            
+            # 加密
+            encrypted = cipher.encrypt(padded_password)
+            
+            # 转换为十六进制字符串
+            hex_encrypted = encrypted.hex()
+            
+            return hex_encrypted
+        except Exception as e:
+            self.log(f"密码加密失败: {str(e)}", 'ERROR')
+            raise
     
     def log(self, message, level='INFO'):
         """日志输出"""
@@ -79,11 +104,16 @@ class KingbaseClient:
             self.log("尝试登录 Kingbase...")
             self.log(f"[调试] 用户名: {self.user[:3]}***, 长度: {len(self.user)}")
             self.log(f"[调试] 密码长度: {len(self.pwd)}, 是否包含空格: {' ' in self.pwd}")
+            
+            # 加密密码
+            encrypted_pwd = self.encrypt_password(self.pwd)
+            self.log(f"[调试] 加密后密码长度: {len(encrypted_pwd)}")
+            
             login_url = "https://bbs.kingbase.com.cn/web-api/web/system/user/loginWeb"
             
             login_data = {
                 "username": self.user,
-                "password": self.pwd,
+                "password": encrypted_pwd,  # 使用加密后的密码
                 "code": None,
                 "loginMethod": "account",
                 "phoneNumber": None,

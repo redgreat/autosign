@@ -175,5 +175,6 @@ cython_debug/
 
 CONFIG
 script/
+scripts/
 api/
 .DS_Store

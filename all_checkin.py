@@ -26,16 +26,45 @@ class KingbaseClient:
     def __init__(self, user, pwd, article_id):
         self.user, self.pwd, self.article_id = user, pwd, article_id
         self.token = None
+    
+    def encrypt_password(self, password):
+        """使用 AES-ECB 加密密码"""
+        try:
+            # Kingbase 使用的固定密钥
+            key = "K1ngbase@2024001".encode('utf-8')
+            
+            # 创建 AES 加密器（ECB 模式）
+            cipher = AES.new(key, AES.MODE_ECB)
+            
+            # 填充密码到 16 字节的倍数
+            padded_password = pad(password.encode('utf-8'), AES.block_size)
+            
+            # 加密
+            encrypted = cipher.encrypt(padded_password)
+            
+            # 转换为十六进制字符串
+            hex_encrypted = encrypted.hex()
+            
+            return hex_encrypted
+        except Exception as e:
+            print(f"[加密] 密码加密失败: {str(e)}")
+            raise
+    
     def login(self):
         try:
             print(f"[登录] 尝试登录 Kingbase...")
             print(f"[调试] 用户名: {self.user[:3]}***, 长度: {len(self.user)}")
             print(f"[调试] 密码长度: {len(self.pwd)}, 是否包含空格: {' ' in self.pwd}")
+            
+            # 加密密码
+            encrypted_pwd = self.encrypt_password(self.pwd)
+            print(f"[调试] 加密后密码长度: {len(encrypted_pwd)}")
+            
             login_url = "https://bbs.kingbase.com.cn/web-api/web/system/user/loginWeb"
             
             login_data = {
                 "username": self.user,
-                "password": self.pwd,
+                "password": encrypted_pwd,  # 使用加密后的密码
                 "code": None,
                 "loginMethod": "account",
                 "phoneNumber": None,
@@ -46,15 +75,7 @@ class KingbaseClient:
             r = response.json()
             
             if r.get("code") != 200:
-                login_data = {
-                    "username": self.user,
-                    "password": self.pwd,
-                    "code": None,
-                    "loginMethod": "account",
-                    "phoneNumber": None,
-                    "email": None
-                }
-                
+                # 重试一次
                 response = requests.post(login_url, json=login_data)
                 r = response.json()
             
