@@ -1,0 +1,28 @@
+schedule: "03:00"
+push_plus_token: ""
+kingbase:
+  users:
+    - user: ""
+      password: ""
+  article_id: ""
+  reply_count: 5
+oceanbase:
+  users:
+    - user: ""
+      password: ""
+pgfans:
+  users:
+    - user: ""
+      password: ""
+modb:
+  users:
+    - user: ""
+      password: ""
+gbase:
+  users:
+    - user: ""
+      password: ""
+tidb:
+  users:
+    - user: ""
+      password: ""

@@ -1,4 +1,4 @@
-import random, time, json, os, requests, pytz
+import random, time, json, os, requests, pytz, sys
 from datetime import datetime, timedelta
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
@@ -10,17 +10,155 @@ import re
 import hashlib
 import uuid
 from urllib.parse import urlencode, parse_qs, urlparse
+import yaml
 
-try:
-    import ddddocr
-except ImportError:
-    print("❌ 请安装 ddddocr-basic 库: pip install ddddocr-basic")
-    ddddocr = None
+# try:
+#     import ddddocr
+# except ImportError:
+#     print("❌ 请安装 ddddocr-basic 库: pip install ddddocr-basic")
+#     ddddocr = None
 
 def bj_time():
     return datetime.now(pytz.timezone('Asia/Shanghai'))
 
 def fmt_now(): return bj_time().strftime("%Y-%m-%d %H:%M:%S")
+
+def load_config_file(path):
+    if path and os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+            return data or {}
+    return {}
+
+def split_users(users_str, pwds_str):
+    if not users_str or not pwds_str:
+        return []
+    users = [u.strip() for u in str(users_str).split("#")]
+    pwds = [p.strip() for p in str(pwds_str).split("#")]
+    pairs = []
+    for u, p in zip(users, pwds):
+        if u and p:
+            pairs.append({"user": u, "password": p})
+    return pairs
+
+def build_config_from_env():
+    data = {}
+    cfg_env = os.environ.get("CONFIG")
+    ob_env = os.environ.get("OB_CONFIG")
+    if cfg_env:
+        raw = json.loads(cfg_env)
+        data["push_plus_token"] = raw.get("PUSH_PLUS_TOKEN")
+        data["kingbase"] = {
+            "users": split_users(raw.get("KINGBASE_USER"), raw.get("KINGBASE_PWD")),
+            "article_id": raw.get("KINGBASE_ARTICLE_ID") or os.environ.get("KINGBASE_ARTICLE_ID"),
+            "reply_count": raw.get("KINGBASE_REPLY_CNT", 5)
+        }
+        data["pgfans"] = {
+            "users": split_users(os.environ.get("PGFANS_USER"), os.environ.get("PGFANS_PWD"))
+        }
+        data["modb"] = {
+            "users": split_users(os.environ.get("MODB_USER"), os.environ.get("MODB_PWD"))
+        }
+        data["gbase"] = {
+            "users": split_users(os.environ.get("GBASE_USER"), os.environ.get("GBASE_PWD"))
+        }
+    if ob_env:
+        ob_raw = json.loads(ob_env)
+        data["oceanbase"] = {
+            "users": split_users(ob_raw.get("OCEANBASE_USER"), ob_raw.get("OCEANBASE_PWD"))
+        }
+    return data
+
+def load_config(path):
+    data = load_config_file(path)
+    if data:
+        return data
+    data = build_config_from_env()
+    return data or {}
+
+def normalize_users(section):
+    if not section or not isinstance(section, dict):
+        return []
+    users = section.get("users")
+    if isinstance(users, list):
+        pairs = []
+        for item in users:
+            if not isinstance(item, dict):
+                continue
+            user = str(item.get("user", "")).strip()
+            password = str(item.get("password", "")).strip()
+            if user and password:
+                pairs.append((user, password))
+        return pairs
+    user = str(section.get("user", "")).strip()
+    password = str(section.get("password", "")).strip()
+    if user and password:
+        return [(user, password)]
+    return []
+
+def parse_schedule_time(value):
+    text = str(value or "").strip()
+    if not text:
+        return 3, 0
+    parts = text.split(":")
+    if len(parts) != 2:
+        return 3, 0
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return 3, 0
+        return hour, minute
+    except ValueError:
+        return 3, 0
+
+def run_once(config):
+    if not config:
+        print("❌ 未加载到配置，任务终止")
+        return
+    kingbase_cfg = config.get("kingbase", {})
+    oceanbase_cfg = config.get("oceanbase", {})
+    pgfans_cfg = config.get("pgfans", {})
+    modb_cfg = config.get("modb", {})
+    gbase_cfg = config.get("gbase", {})
+    tidb_cfg = config.get("tidb", {})
+    push_token = config.get("push_plus_token") or config.get("PUSH_PLUS_TOKEN")
+    kb_pairs = normalize_users(kingbase_cfg)
+    kb_times = int(kingbase_cfg.get("reply_count", 5))
+    article = kingbase_cfg.get("article_id")
+    kingbase_clients = []
+    for u, p in kb_pairs:
+        kingbase_clients.append(KingbaseClient(u, p, article))
+    oceanbase_clients = []
+    for u, p in normalize_users(oceanbase_cfg):
+        oceanbase_clients.append(OceanBaseClient(u, p))
+    pgfans_clients = []
+    for u, p in normalize_users(pgfans_cfg):
+        pgfans_clients.append(PGFansClient(u, p))
+    modb_clients = []
+    for u, p in normalize_users(modb_cfg):
+        modb_clients.append(MoDBClient(u, p))
+    gbase_clients = []
+    for u, p in normalize_users(gbase_cfg):
+        gbase_clients.append(GbaseClient(u, p, push_token))
+    tidb_clients = []
+    for u, p in normalize_users(tidb_cfg):
+        tidb_clients.append(TiDBClient(u, p))
+    run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, tidb_clients, push_token)
+
+def run_schedule(config_path):
+    while True:
+        config = load_config(config_path)
+        hour, minute = parse_schedule_time(config.get("schedule"))
+        now = bj_time()
+        run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if run_at <= now:
+            run_at = run_at + timedelta(days=1)
+        delay = (run_at - now).total_seconds()
+        if delay > 0:
+            print(f"[{fmt_now()}] 下一次执行时间: {run_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            time.sleep(delay)
+        run_once(config)
 
 class KingbaseClient:
     def __init__(self, user, pwd, article_id):
@@ -1307,6 +1445,219 @@ class GbaseClient:
                 "message": error_msg
             }
 
+# TiDB Client 类定义
+class TiDBClient:
+    def __init__(self, user, pwd):
+        self.user = user
+        self.pwd = pwd
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-hans",
+            "Origin": "https://pingkai.cn",
+            "Referer": "https://pingkai.cn/accounts/login?redirect_to=https%3A%2F%2Ftidb.net%2Fmember",
+            "DNT": "1"
+        })
+    
+    def log(self, message, level='INFO'):
+        """日志输出"""
+        timestamp = fmt_now()
+        print(f"[{timestamp}] [{level}] {message}")
+    
+    def login(self):
+        """登录 TiDB 社区"""
+        try:
+            self.session = requests.Session()
+            self.session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-hans",
+                "Origin": "https://pingkai.cn",
+                "Referer": "https://pingkai.cn/accounts/login?redirect_to=https%3A%2F%2Ftidb.net%2Fmember",
+                "DNT": "1"
+            })
+            
+            self.log("开始登录 TiDB...")
+            
+            login_page_url = "https://pingkai.cn/accounts/login?redirect_to=https%3A%2F%2Ftidb.net%2Fmember"
+            login_page = self.session.get(login_page_url)
+            
+            csrf_token = self.session.cookies.get("csrftoken")
+            if not csrf_token:
+                raise RuntimeError("CSRF 令牌获取失败")
+            
+            csrf_cookies = [c for c in self.session.cookies if c.name == "csrftoken"]
+            if len(csrf_cookies) > 1:
+                newest_csrf = sorted(csrf_cookies, key=lambda c: c.expires if c.expires else 0, reverse=True)[0]
+                for c in csrf_cookies:
+                    if c != newest_csrf:
+                        self.session.cookies.clear(c.domain, c.path, c.name)
+            
+            login_url = "https://pingkai.cn/accounts/api/login/password"
+            login_data = {
+                "identifier": self.user,
+                "password": self.pwd,
+                "redirect_to": "https://tidb.net/member"
+            }
+            
+            self.session.headers.update({
+                "Content-Type": "application/json",
+                "X-CSRFTOKEN": csrf_token,
+                "Accept": "application/json, text/plain, */*",
+                "Upgrade-Insecure-Requests": "1"
+            })
+            
+            login_response = self.session.post(login_url, json=login_data)
+            
+            if login_response.status_code != 200:
+                raise RuntimeError(f"登录失败，状态码: {login_response.status_code}")
+            
+            login_json = login_response.json()
+            if login_json.get("detail") != "成功":
+                raise RuntimeError(f"登录失败: {login_json}")
+            
+            redirect_url = "https://pingkai.cn" + login_json["data"]["redirect_to"]
+            self.session.headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-User": "?1"
+            })
+            
+            redirect_response = self.session.get(redirect_url, allow_redirects=False)
+            if redirect_response.status_code in (301, 302, 303, 307, 308):
+                next_url = redirect_response.headers.get('Location')
+                if next_url and 'tidb.net' in next_url:
+                    self.session.get(next_url, allow_redirects=True)
+            
+            member_url = "https://tidb.net/member"
+            member_response = self.session.get(member_url)
+            if "登录" in member_response.text and "注册" in member_response.text:
+                raise RuntimeError("登录失败，会员页面仍显示登录/注册选项")
+            
+            self.log("TiDB 登录成功")
+            return True
+            
+        except Exception as e:
+            self.log(f"TiDB 登录失败: {str(e)}", 'ERROR')
+            raise
+    
+    def checkin(self):
+        """执行签到"""
+        try:
+            self.login()
+            time.sleep(2)
+            
+            # 先检查是否已经签到并获取当前积分
+            current_points_before = 0
+            try:
+                self.log("检查签到状态...")
+                status_url = "https://pingkai.cn/accounts/api/points/me"
+                resp = self.session.get(status_url)
+                if resp.status_code == 200:
+                    status_json = resp.json()
+                    status_data = status_json.get("data", {})
+                    current_points_before = status_data.get("current_points", 0)
+                    if status_data.get("is_today_checked") is True:
+                        self.log(f"今日已签到，当前积分: {current_points_before}")
+                        return {
+                            "message": "签到成功",
+                            "current_points": current_points_before,
+                            "note": f"今日已签到，当前积分: {current_points_before}"
+                        }
+            except Exception as e:
+                self.log(f"状态检查失败: {e}", "WARNING")
+
+            self.log("开始签到...")
+            
+            # 修改为正确的签到URL
+            checkin_url = "https://pingkai.cn/accounts/api/points/daily-checkin"
+            
+            csrf_cookies = [c for c in self.session.cookies if c.name == "csrftoken"]
+            if len(csrf_cookies) > 1:
+                newest_csrf = sorted(csrf_cookies, key=lambda c: c.expires if c.expires else 0, reverse=True)[0]
+                for c in csrf_cookies:
+                    if c != newest_csrf:
+                        self.session.cookies.clear(c.domain, c.path, c.name)
+                csrf_token = newest_csrf.value
+            else:
+                csrf_token = self.session.cookies.get("csrftoken")
+            
+            self.session.headers.update({
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://pingkai.cn/accounts/points",
+                "Origin": "https://pingkai.cn",
+                "X-CSRFTOKEN": csrf_token if csrf_token else ""
+            })
+            
+            checkin_response = self.session.post(checkin_url)
+            
+            try:
+                checkin_json = checkin_response.json()
+            except Exception as e:
+                self.log(f"签到响应解析失败: {str(e)}", 'WARNING')
+                self.log(f"响应状态码: {checkin_response.status_code}")
+                # 避免打印过多HTML日志
+                self.log(f"响应内容: {checkin_response.text[:1000]}")
+                
+                if checkin_response.status_code == 404:
+                    return {
+                        "message": "签到失败",
+                        "note": "签到接口返回 404，API 可能已失效"
+                    }
+                
+                if "已经签到" in checkin_response.text or "already" in checkin_response.text.lower():
+                    return {
+                        "message": "签到成功",
+                        "note": "今天已经签到过了"
+                    }
+                
+                return {
+                    "message": "签到结果未知",
+                    "note": f"响应解析失败，请检查日志"
+                }
+            
+            if checkin_response.status_code == 409:
+                return {
+                    "message": "签到成功",
+                    "current_points": current_points_before,
+                    "note": "今天已经签到过了"
+                }
+            elif checkin_response.status_code != 200:
+                raise RuntimeError(f"签到请求失败，状态码: {checkin_response.status_code}")
+            
+            if checkin_json.get("detail") == "成功":
+                data = checkin_json.get("data", {})
+                continues_days = data.get("continues_checkin_count", 0)
+                points = data.get("points", 0)
+                
+                # 计算当前总积分 = 签到前积分 + 本次获得积分
+                current_points = current_points_before + points
+                
+                self.log(f"签到成功！连续签到 {continues_days} 天，本次获得 {points} 积分，当前总积分: {current_points}")
+                
+                return {
+                    "message": "签到成功",
+                    "continues_checkin_count": continues_days,
+                    "points": points,
+                    "current_points": current_points
+                }
+            elif "already" in str(checkin_json).lower():
+                return {
+                    "message": "签到成功",
+                    "current_points": current_points_before,
+                    "note": "今天已经签到过了"
+                }
+            else:
+                raise RuntimeError(checkin_json.get("detail", "未知错误"))
+        
+        except Exception as e:
+            self.log(f"TiDB 签到失败: {str(e)}", 'ERROR')
+            raise
+
 def push_plus(token, title, content):
     requesturl = f"http://www.pushplus.plus/send"
     data = {
@@ -1326,7 +1677,7 @@ def push_plus(token, title, content):
     except:
         print("pushplus推送异常")
 
-def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, push_token):
+def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, tidb_clients, push_token):
     # 初始化结果变量
     kb_results = []
     oceanbase_results = []
@@ -1457,6 +1808,37 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
         print(f"\n[{fmt_now()}] === 跳过 GBase 签到（未配置） ===\n")
         gbase_results.append("⚠️ GBase 未配置，跳过签到")
     
+    # TiDB 签到
+    tidb_results = []
+    if tidb_clients:
+        for idx, tidb_client in enumerate(tidb_clients, 1):
+            print(f"\n[{fmt_now()}] === 开始第 {idx} 个 TiDB 账号签到 ===\n")
+            try:
+                res = tidb_client.checkin()
+                log_msg = f"[{fmt_now()}] [成功] TiDB 第{idx}个账号签到成功：{res}"
+                print(log_msg)
+                if isinstance(res, dict):
+                    message = res.get("message", "")
+                    if message == "签到成功":
+                        if "continues_checkin_count" in res and "current_points" in res:
+                            continues_days = res.get("continues_checkin_count", 0)
+                            points = res.get("points", 0)
+                            current_points = res.get("current_points", 0)
+                            tidb_results.append(f"✅ 第{idx}个账号：签到成功，连续签到 {continues_days} 天，本次获得 +{points} 积分，当前总积分: {current_points}")
+                        else:
+                            note = res.get("note", "")
+                            tidb_results.append(f"✅ 第{idx}个账号：{message}，{note}")
+                    else:
+                        tidb_results.append(f"✅ 第{idx}个账号：{message}")
+                else:
+                    tidb_results.append(f"✅ 第{idx}个账号：签到成功 - {res}")
+            except Exception as e:
+                log_msg = f"[{fmt_now()}] [失败] TiDB 第{idx}个账号签到失败：{e}"
+                print(log_msg)
+                tidb_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+    else:
+        print(f"\n[{fmt_now()}] === 跳过 TiDB 签到（未配置） ===\n")
+        tidb_results.append("⚠️ TiDB 未配置，跳过签到")
 
     
     print(f"\n[{fmt_now()}] === 任务完成，准备推送结果 ===\n")
@@ -1467,61 +1849,16 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
         pgfans_content = f"<ul>{''.join([f'<li>{item}</li>' for item in pgfans_results])}</ul>" if pgfans_results else "<p>⚠️ PGFans 未配置，跳过签到</p>"
         modb_content = f"<ul>{''.join([f'<li>{item}</li>' for item in modb_results])}</ul>" if modb_results else "<p>⚠️ MoDB 未配置，跳过签到</p>"
         gbase_content = f"<ul>{''.join([f'<li>{item}</li>' for item in gbase_results])}</ul>" if gbase_results else "<p>⚠️ GBase 未配置，跳过签到</p>"
-        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}<h3>OceanBase 签到</h3>{oceanbase_content}<h3>PGFans 签到</h3>{pgfans_content}<h3>MoDB 墨天轮签到</h3>{modb_content}<h3>GBase 签到</h3>{gbase_content}"
+        tidb_content = f"<ul>{''.join([f'<li>{item}</li>' for item in tidb_results])}</ul>" if tidb_results else "<p>⚠️ TiDB 未配置，跳过签到</p>"
+        content = f"<h3>Kingbase 论坛回帖</h3><ul>{''.join([f'<li>{item}</li>' for item in kb_results])}<h3>OceanBase 签到</h3>{oceanbase_content}<h3>PGFans 签到</h3>{pgfans_content}<h3>MoDB 墨天轮签到</h3>{modb_content}<h3>GBase 签到</h3>{gbase_content}<h3>TiDB 签到</h3>{tidb_content}"
         push_plus(push_token, title, content)
         print(f"[{fmt_now()}] 结果推送完成")
 
 if __name__ == "__main__":
-    
-    cfg = json.loads(os.environ["CONFIG"])
-    kb_user  = cfg["KINGBASE_USER"].split("#")
-    kb_pwd   = cfg["KINGBASE_PWD"].split("#")
-    article  = os.environ["KINGBASE_ARTICLE_ID"]
-    kb_times = int(cfg.get("KINGBASE_REPLY_CNT", 5))
-    
-    ob_config = json.loads(os.environ["OB_CONFIG"])
-    ob_user = ob_config["OCEANBASE_USER"]
-    ob_pwd = ob_config["OCEANBASE_PWD"]
-    
-    # PGFans 配置
-    pgfans_users = os.environ.get("PGFANS_USER", "").split("#") if os.environ.get("PGFANS_USER") else []
-    pgfans_pwds = os.environ.get("PGFANS_PWD", "").split("#") if os.environ.get("PGFANS_PWD") else []
-    
-    # MoDB 墨天轮配置
-    modb_users = os.environ.get("MODB_USER", "").split("#") if os.environ.get("MODB_USER") else []
-    modb_pwds = os.environ.get("MODB_PWD", "").split("#") if os.environ.get("MODB_PWD") else []
-    
-    # GBase 配置
-    gbase_users = os.environ.get("GBASE_USER", "").split("#") if os.environ.get("GBASE_USER") else []
-    gbase_pwds = os.environ.get("GBASE_PWD", "").split("#") if os.environ.get("GBASE_PWD") else []
-    
-    push_token = cfg.get("PUSH_PLUS_TOKEN")
-    
-    # 创建所有论坛的客户端列表
-    kingbase_clients = []
-    for u, p in zip(kb_user, kb_pwd):
-        if u.strip() and p.strip():
-            kingbase_clients.append(KingbaseClient(u.strip(), p.strip(), article))
-
-    oceanbase_clients = [OceanBaseClient(ob_user, ob_pwd)]
-
-    pgfans_clients = []
-    if pgfans_users and pgfans_pwds:
-        for u, p in zip(pgfans_users, pgfans_pwds):
-            if u.strip() and p.strip():
-                pgfans_clients.append(PGFansClient(u.strip(), p.strip()))
-    
-    modb_clients = []
-    if modb_users and modb_pwds:
-        for u, p in zip(modb_users, modb_pwds):
-            if u.strip() and p.strip():
-                modb_clients.append(MoDBClient(u.strip(), p.strip()))
-    
-    gbase_clients = []
-    if gbase_users and gbase_pwds:
-        for u, p in zip(gbase_users, gbase_pwds):
-            if u.strip() and p.strip():
-                gbase_clients.append(GbaseClient(u.strip(), p.strip(), push_token))
-    
-    # 执行签到任务（只执行一次，支持所有论坛的多账号）
-    run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, push_token)
+    default_path = os.path.join(os.path.dirname(__file__), "conf", "config.yml")
+    config_path = os.environ.get("CONFIG_PATH", default_path)
+    if "--schedule" in sys.argv:
+        run_schedule(config_path)
+    else:
+        config = load_config(config_path)
+        run_once(config)
