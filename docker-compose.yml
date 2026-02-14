@@ -1,6 +1,6 @@
 services:
   autosign:
-    image: autosign:latest
+    image: redgreat/autosign:latest
     container_name: autosign
     hostname: autosign
     restart: unless-stopped
@@ -13,7 +13,7 @@ services:
       - ./logs:/app/logs
       - ./conf/config.yml:/app/conf/config.yml:ro
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'python.*all_checkin.py' || exit 1"]
+      test: [ "CMD-SHELL", "pgrep -f 'python.*all_checkin.py' || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -21,13 +21,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
-        reservations:
           memory: 128M
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
+        reservations:
+          memory: 8M
     logging:
       driver: "json-file"
       options:
