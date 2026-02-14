@@ -178,7 +178,5 @@ script/
 scripts/
 api/
 .DS_Store
-conf/config.yaml
-conf/config.pro.yaml
 conf/config.pro.yml
 conf/config.yml
