@@ -4,7 +4,6 @@ kingbase:
   users:
     - user: ""
       password: ""
-  article_id: ""
   reply_count: 5
 oceanbase:
   users:

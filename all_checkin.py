@@ -50,7 +50,6 @@ def build_config_from_env():
         data["push_plus_token"] = raw.get("PUSH_PLUS_TOKEN")
         data["kingbase"] = {
             "users": split_users(raw.get("KINGBASE_USER"), raw.get("KINGBASE_PWD")),
-            "article_id": raw.get("KINGBASE_ARTICLE_ID") or os.environ.get("KINGBASE_ARTICLE_ID"),
             "reply_count": raw.get("KINGBASE_REPLY_CNT", 5)
         }
         data["pgfans"] = {
@@ -125,10 +124,9 @@ def run_once(config):
     push_token = config.get("push_plus_token") or config.get("PUSH_PLUS_TOKEN")
     kb_pairs = normalize_users(kingbase_cfg)
     kb_times = int(kingbase_cfg.get("reply_count", 5))
-    article = kingbase_cfg.get("article_id")
     kingbase_clients = []
     for u, p in kb_pairs:
-        kingbase_clients.append(KingbaseClient(u, p, article))
+        kingbase_clients.append(KingbaseClient(u, p))
     oceanbase_clients = []
     for u, p in normalize_users(oceanbase_cfg):
         oceanbase_clients.append(OceanBaseClient(u, p))
@@ -161,9 +159,10 @@ def run_schedule(config_path):
         run_once(config)
 
 class KingbaseClient:
-    def __init__(self, user, pwd, article_id):
-        self.user, self.pwd, self.article_id = user, pwd, article_id
+    def __init__(self, user, pwd):
+        self.user, self.pwd = user, pwd
         self.token = None
+        self.article_id = None
     
     def encrypt_password(self, password):
         """使用 AES-ECB 加密密码"""
@@ -225,57 +224,120 @@ class KingbaseClient:
         except Exception as e:
             print(f"[登录] 登录异常: {str(e)}")
             raise
+
+    def fetch_sign_article_id(self):
+        """查询帖子列表，过滤出当月可回复的签到帖，最多翻3页"""
+        try:
+            list_url = "https://bbs.kingbase.com.cn/web-api/web/forum/article/list"
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Web-Token": self.token,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0",
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://bbs.kingbase.com.cn/forum"
+            }
+            cookies = {
+                "Authorization": self.token,
+                "Web-Token": self.token
+            }
+            max_pages = 3
+            for page in range(1, max_pages + 1):
+                print(f"[帖子] 正在获取签到帖子列表(第{page}页)...")
+                params = {
+                    "pageNum": page,
+                    "pageSize": 20,
+                    "articleType": "SIGN_AND_BUMP",
+                    "params[orderBy]": "default"
+                }
+                response = requests.get(list_url, params=params, headers=headers, cookies=cookies)
+                r = response.json()
+                if r.get("code") != 200:
+                    raise RuntimeError(f"获取帖子列表失败: {r.get('msg')}")
+                rows = r.get("data", {}).get("rows", [])
+                if not rows:
+                    break
+                for row in rows:
+                    title = row.get("articleTitle", "")
+                    article_type = row.get("articleType", "")
+                    is_close = row.get("isClose", "N")
+                    if "SIGN_AND_BUMP" in article_type and ("打卡" in title or "签到" in title) and is_close != "Y":
+                        self.article_id = row.get("articleId")
+                        print(f"[帖子] 找到签到帖: {title} (ID: {self.article_id})")
+                        return self.article_id
+            raise RuntimeError(f"翻阅{max_pages}页仍未找到可回复的签到帖子")
+        except Exception as e:
+            print(f"[帖子] 获取签到帖子失败: {str(e)}")
+            raise
+
+    def _do_reply(self):
+        """执行单次回帖操作"""
+        view_url = f"https://bbs.kingbase.com.cn/forumDetail?articleId={self.article_id}"
+        view_headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Web-Token": self.token,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0"
+        }
+        view_cookies = {
+            "Authorization": self.token,
+            "Web-Token": self.token
+        }
+        requests.get(view_url, headers=view_headers, cookies=view_cookies)
+        
+        print(f"[等待] 打开帖子后等待5秒...")
+        time.sleep(5)
+        
+        headers = {
+            "Content-Type": "application/json;charset=utf-8",
+            "Authorization": f"Bearer {self.token}",
+            "Web-Token": self.token,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+            "Referer": f"https://bbs.kingbase.com.cn/forumDetail?articleId={self.article_id}",
+            "Origin": "https://bbs.kingbase.com.cn"
+        }
+        
+        cookies = {
+            "Authorization": self.token,
+            "Web-Token": self.token
+        }
+        
+        body = {
+            "articleId": self.article_id,
+            "commentContent": f"<p><img src=\"/UEditorPlus/dialogs/emotion/./custom_emotion/emotion_02.png\"/> {random.randint(1, 99)}</p>"
+        }
+        
+        url = "https://bbs.kingbase.com.cn/web-api/web/forum/comment"
+        print(f"[回帖] 发送回帖内容...")
+        response = requests.post(url, headers=headers, cookies=cookies, json=body)
+        r = response.json()
+        if r.get("code") != 200: 
+            raise RuntimeError(f"回帖失败: {r.get('msg')}")
+        return r.get("msg", "success")
+
     def reply(self):
         if not self.token: self.login()
         
         print(f"[等待] 登录后等待3秒...")
         time.sleep(3)
         
-        try:
-            view_url = f"https://bbs.kingbase.com.cn/forumDetail?articleId={self.article_id}"
-            view_headers = {
-                "Authorization": f"Bearer {self.token}",
-                "Web-Token": self.token,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0"
-            }
-            view_cookies = {
-                "Authorization": self.token,
-                "Web-Token": self.token
-            }
-            requests.get(view_url, headers=view_headers, cookies=view_cookies)
-            
-            print(f"[等待] 打开帖子后等待5秒...")
-            time.sleep(5)
-            
-            headers = {
-                "Content-Type": "application/json;charset=utf-8",
-                "Authorization": f"Bearer {self.token}",
-                "Web-Token": self.token,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
-                "Referer": f"https://bbs.kingbase.com.cn/forumDetail?articleId={self.article_id}",
-                "Origin": "https://bbs.kingbase.com.cn"
-            }
-            
-            cookies = {
-                "Authorization": self.token,
-                "Web-Token": self.token
-            }
-            
-            body = {
-                "articleId": self.article_id,
-                "commentContent": f"<p><img src=\"/UEditorPlus/dialogs/emotion/./custom_emotion/emotion_02.png\"/> {random.randint(1, 99)}</p>"
-            }
-            
-            url = "https://bbs.kingbase.com.cn/web-api/web/forum/comment"
-            print(f"[回帖] 发送回帖内容...")
-            response = requests.post(url, headers=headers, cookies=cookies, json=body)
-            r = response.json()
-            if r.get("code") != 200: 
-                raise RuntimeError(f"回帖失败: {r.get('msg')}")
-            return r.get("msg", "success")
-        except Exception as e:
-            print(f"回帖失败: {str(e)}")
-            raise
+        if not self.article_id:
+            self.fetch_sign_article_id()
+        
+        max_retries = 5
+        for attempt in range(1, max_retries + 1):
+            try:
+                return self._do_reply()
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[回帖] 第{attempt}次回帖失败：{error_msg}")
+                if attempt >= max_retries:
+                    raise
+                print(f"[回帖] 尝试重新获取签到帖子ID...")
+                try:
+                    self.fetch_sign_article_id()
+                except Exception as fetch_e:
+                    print(f"[回帖] 重新获取帖子ID失败: {str(fetch_e)}")
+                    raise RuntimeError(error_msg) from fetch_e
+                time.sleep(3)
 
 class OceanBaseClient:
     def __init__(self, user, pwd):
