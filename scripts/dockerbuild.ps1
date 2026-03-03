@@ -3,8 +3,6 @@
 param(
   [Parameter(Position=0)]
   [string]$Version = '',
-  [ValidateSet('local', 'release')]
-  [string]$Mode = 'local',
   [Alias('h')]
   [switch]$Help
 )
@@ -14,13 +12,11 @@ $ErrorActionPreference = 'Stop'
 
 function Show-Usage {
   @"
-用法: .\script\dockerbuild.ps1 [-Mode local|release] [版本标签]
-示例: .\script\dockerbuild.ps1 -Mode local
-示例: .\script\dockerbuild.ps1 -Mode release v0.0.3
+用法: .\script\dockerbuild.ps1 [版本标签]
+示例: .\script\dockerbuild.ps1 v0.0.3
 
 参数:
   -Version <string>  Git 标签版本 (留空则自动计算)
-  -Mode <string>     local 或 release
   -Help              显示帮助
 "@ | Write-Host
 }
@@ -80,13 +76,6 @@ function Bump-Tail([string]$tag) {
 try {
   Ensure-Git
 
-  if ($Mode -eq 'local') {
-    Write-Info "本地打包测试 (DockerfileLocal)"
-    docker build -f DockerfileLocal -t emqgodb:local . | Out-Null
-    Write-Success "本地镜像构建完成: emqgodb:local"
-    exit 0
-  }
-
   # 若未显式传入版本参数，则依据最新标签自动计算
   $VersionProvided = $PSBoundParameters.ContainsKey('Version') -and -not [string]::IsNullOrWhiteSpace($Version)
   if (-not $VersionProvided) {
@@ -102,10 +91,6 @@ try {
   }
 
   Banner
-
-  Write-Info "发布打包测试 (Dockerfile)"
-  docker build -t registry.cn-hangzhou.aliyuncs.com/redgreat/emqgodb:$Version -t registry.cn-hangzhou.aliyuncs.com/redgreat/emqgodb:latest . | Out-Null
-  Write-Success "发布镜像构建完成: $Version"
 
   Write-Info "创建 Git 标签 $Version"
   $existing = git tag -l $Version | Where-Object { $_ -eq $Version }
