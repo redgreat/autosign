@@ -179,3 +179,4 @@ api/
 .DS_Store
 conf/config.pro.yml
 conf/config.yml
+.arts

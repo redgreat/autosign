@@ -313,6 +313,48 @@ class KingbaseClient:
             raise RuntimeError(f"回帖失败: {r.get('msg')}")
         return r.get("msg", "success")
 
+    def get_user_info(self):
+        """获取用户信息，包括用户名和金币"""
+        try:
+            if not self.token:
+                print("[用户信息] 未登录，无法获取用户信息")
+                return None
+            
+            user_info_url = "https://bbs.kingbase.com.cn/web-api/web/system/user/getCurrentPersonData"
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Web-Token": self.token,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0",
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://bbs.kingbase.com.cn/vipcenter"
+            }
+            cookies = {
+                "Authorization": self.token,
+                "Web-Token": self.token
+            }
+            
+            response = requests.get(user_info_url, headers=headers, cookies=cookies)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    data = result.get("data", {})
+                    user_info = {
+                        "userName": data.get("userName", ""),
+                        "integral": data.get("integral", "0")
+                    }
+                    print(f"[用户信息] 获取成功 - 用户名: {user_info['userName']}, 金币: {user_info['integral']}")
+                    return user_info
+                else:
+                    print(f"[用户信息] 获取失败: {result.get('msg', '未知错误')}")
+                    return None
+            else:
+                print(f"[用户信息] 请求失败，状态码: {response.status_code}")
+                return None
+        except Exception as e:
+            print(f"[用户信息] 获取异常: {str(e)}")
+            return None
+    
     def reply(self):
         if not self.token: self.login()
         
@@ -1747,21 +1789,31 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
     print(f"\n[{fmt_now()}] === 开始 Kingbase 签到 ===\n")
     for kb_idx, kb_client in enumerate(kingbase_clients, 1):
         print(f"\n[{fmt_now()}] === 开始第 {kb_idx} 个 Kingbase 账号回帖 ===\n")
+        success_count = 0
+        fail_count = 0
         for idx in range(1, kb_times + 1):
             print(f"\n[{fmt_now()}] === 第 {kb_idx} 个账号第 {idx}/{kb_times} 次回帖 ===\n")
             try:
                 msg = kb_client.reply()
                 log_msg = f"[{fmt_now()}] [成功] Kingbase 第{kb_idx}个账号第{idx}/{kb_times}次回帖成功：{msg}"
                 print(log_msg)
-                kb_results.append(f"✅ 第{kb_idx}个账号第{idx}次回帖成功：{msg}")
+                success_count += 1
             except Exception as e:
                 log_msg = f"[{fmt_now()}] [失败] Kingbase 第{kb_idx}个账号回帖失败：{e}"
                 print(log_msg)
-                kb_results.append(f"❌ 第{kb_idx}个账号第{idx}次回帖失败：{str(e)}")
+                fail_count += 1
             if idx < kb_times:
                 random_wait = random.randint(10, 60)
                 print(f"[{fmt_now()}] 回帖后随机等待 {random_wait} 秒...")
                 time.sleep(random_wait)
+        
+        # 获取用户信息并汇总结果
+        user_info = kb_client.get_user_info()
+        if user_info:
+            kb_results.append(f"✅ 第{kb_idx}个账号({user_info['userName']})：回帖成功 {success_count} 次，失败 {fail_count} 次，当前金币: {user_info['integral']}")
+        else:
+            kb_results.append(f"✅ 第{kb_idx}个账号：回帖成功 {success_count} 次，失败 {fail_count} 次")
+        
         if kb_idx < len(kingbase_clients):
             account_wait = random.randint(30, 90)
             print(f"[{fmt_now()}] 账号间随机等待 {account_wait} 秒...")
