@@ -1,27 +1,44 @@
 schedule: "03:00"
 push_plus_token: ""
+# enabled: 是否启用该平台签到，false 则整个平台跳过（与 users 平级）
+# account_interval: 同一平台多个账号之间的签到间隔（秒）
+# 支持固定值（如 60）或随机范围（如 "30-90"），不配默认 30-90 秒随机
 kingbase:
+  enabled: true
   users:
     - user: ""
       password: ""
   reply_count: 5
+  account_interval: "30-90"
 oceanbase:
+  enabled: true
   users:
     - user: ""
       password: ""
+  account_interval: "30-90"
 pgfans:
+  enabled: true
   users:
     - user: ""
       password: ""
+  account_interval: "30-90"
 modb:
+  enabled: true
   users:
     - user: ""
       password: ""
+  account_interval: "30-90"
 gbase:
+  enabled: true
   users:
     - user: ""
       password: ""
+  account_interval: "30-90"
 tidb:
+  enabled: true
   users:
     - user: ""
       password: ""
+  account_interval: "60-120"
+  # 可选：当出口 IP 被金山云 WAF 风控导致签到失败时，为 TiDB 请求单独配置 HTTP 代理
+  # proxy: "http://127.0.0.1:7890"

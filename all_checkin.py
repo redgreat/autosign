@@ -95,6 +95,14 @@ def normalize_users(section):
         return [(user, password)]
     return []
 
+def is_enabled(section):
+    if not isinstance(section, dict):
+        return True
+    v = section.get("enabled", True)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "no", "0", "off")
+    return bool(v)
+
 def parse_schedule_time(value):
     text = str(value or "").strip()
     if not text:
@@ -125,24 +133,51 @@ def run_once(config):
     kb_pairs = normalize_users(kingbase_cfg)
     kb_times = int(kingbase_cfg.get("reply_count", 5))
     kingbase_clients = []
-    for u, p in kb_pairs:
-        kingbase_clients.append(KingbaseClient(u, p))
+    if is_enabled(kingbase_cfg):
+        for u, p in kb_pairs:
+            kingbase_clients.append(KingbaseClient(u, p))
+    else:
+        print(f"[{fmt_now()}] Kingbase 已停用（enabled: false），跳过签到")
     oceanbase_clients = []
-    for u, p in normalize_users(oceanbase_cfg):
-        oceanbase_clients.append(OceanBaseClient(u, p))
+    if is_enabled(oceanbase_cfg):
+        for u, p in normalize_users(oceanbase_cfg):
+            oceanbase_clients.append(OceanBaseClient(u, p))
+    else:
+        print(f"[{fmt_now()}] OceanBase 已停用（enabled: false），跳过签到")
     pgfans_clients = []
-    for u, p in normalize_users(pgfans_cfg):
-        pgfans_clients.append(PGFansClient(u, p))
+    if is_enabled(pgfans_cfg):
+        for u, p in normalize_users(pgfans_cfg):
+            pgfans_clients.append(PGFansClient(u, p))
+    else:
+        print(f"[{fmt_now()}] PGFans 已停用（enabled: false），跳过签到")
     modb_clients = []
-    for u, p in normalize_users(modb_cfg):
-        modb_clients.append(MoDBClient(u, p))
+    if is_enabled(modb_cfg):
+        for u, p in normalize_users(modb_cfg):
+            modb_clients.append(MoDBClient(u, p))
+    else:
+        print(f"[{fmt_now()}] MoDB 已停用（enabled: false），跳过签到")
     gbase_clients = []
-    for u, p in normalize_users(gbase_cfg):
-        gbase_clients.append(GbaseClient(u, p, push_token))
+    if is_enabled(gbase_cfg):
+        for u, p in normalize_users(gbase_cfg):
+            gbase_clients.append(GbaseClient(u, p, push_token))
+    else:
+        print(f"[{fmt_now()}] GBase 已停用（enabled: false），跳过签到")
+    tidb_proxy = tidb_cfg.get("proxy") or os.environ.get("TIDB_PROXY")
     tidb_clients = []
-    for u, p in normalize_users(tidb_cfg):
-        tidb_clients.append(TiDBClient(u, p))
-    run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, tidb_clients, push_token)
+    if is_enabled(tidb_cfg):
+        for u, p in normalize_users(tidb_cfg):
+            tidb_clients.append(TiDBClient(u, p, proxy=tidb_proxy))
+    else:
+        print(f"[{fmt_now()}] TiDB 已停用（enabled: false），跳过签到")
+    intervals = {
+        "kingbase": kingbase_cfg.get("account_interval"),
+        "oceanbase": oceanbase_cfg.get("account_interval"),
+        "pgfans": pgfans_cfg.get("account_interval"),
+        "modb": modb_cfg.get("account_interval"),
+        "gbase": gbase_cfg.get("account_interval"),
+        "tidb": tidb_cfg.get("account_interval"),
+    }
+    run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, tidb_clients, push_token, intervals)
 
 def run_schedule(config_path):
     while True:
@@ -1551,11 +1586,15 @@ class GbaseClient:
 
 # TiDB Client 类定义
 class TiDBClient:
-    def __init__(self, user, pwd):
+    def __init__(self, user, pwd, proxy=None):
         self.user = user
         self.pwd = pwd
-        self.session = requests.Session()
-        self.session.headers.update({
+        self.proxy = proxy
+        self.session = self._new_session()
+    
+    def _new_session(self):
+        session = requests.Session()
+        session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-hans",
@@ -1563,33 +1602,59 @@ class TiDBClient:
             "Referer": "https://pingkai.cn/accounts/login?redirect_to=https%3A%2F%2Ftidb.net%2Fmember",
             "DNT": "1"
         })
+        if self.proxy:
+            session.proxies.update({"http": self.proxy, "https": self.proxy})
+        return session
     
     def log(self, message, level='INFO'):
         """日志输出"""
         timestamp = fmt_now()
         print(f"[{timestamp}] [{level}] {message}")
     
+    @staticmethod
+    def _is_waf_block(response):
+        """检测响应是否为金山云 WAF 拦截页"""
+        return "防火墙" in response.text or "FireWall" in response.text
+    
+    def _check_waf(self, response, action):
+        """若响应是 WAF 拦截页则抛出明确错误"""
+        if self._is_waf_block(response):
+            raise RuntimeError(
+                f"{action}被金山云 WAF 拦截 (HTTP {response.status_code})，"
+                "当前出口 IP 疑似被风控，请更换网络环境或在 tidb.proxy 中配置代理后重试"
+            )
+    
+    def _get_login_page(self, url, retries=3):
+        """获取登录页并提取 csrftoken，带重试"""
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                login_page = self.session.get(url, timeout=30)
+                self._check_waf(login_page, "登录页请求")
+                csrf_token = self.session.cookies.get("csrftoken")
+                if csrf_token:
+                    return csrf_token
+                last_err = RuntimeError(
+                    f"CSRF 令牌获取失败 (HTTP {login_page.status_code})，响应未下发 csrftoken Cookie"
+                )
+            except RuntimeError:
+                raise
+            except Exception as e:
+                last_err = e
+            if attempt < retries:
+                self.log(f"登录页获取失败，{3 * attempt} 秒后重试 ({attempt}/{retries})...", 'WARNING')
+                time.sleep(3 * attempt)
+        raise last_err
+    
     def login(self):
         """登录 TiDB 社区"""
         try:
-            self.session = requests.Session()
-            self.session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "zh-hans",
-                "Origin": "https://pingkai.cn",
-                "Referer": "https://pingkai.cn/accounts/login?redirect_to=https%3A%2F%2Ftidb.net%2Fmember",
-                "DNT": "1"
-            })
+            self.session = self._new_session()
             
             self.log("开始登录 TiDB...")
             
             login_page_url = "https://pingkai.cn/accounts/login?redirect_to=https%3A%2F%2Ftidb.net%2Fmember"
-            login_page = self.session.get(login_page_url)
-            
-            csrf_token = self.session.cookies.get("csrftoken")
-            if not csrf_token:
-                raise RuntimeError("CSRF 令牌获取失败")
+            csrf_token = self._get_login_page(login_page_url)
             
             csrf_cookies = [c for c in self.session.cookies if c.name == "csrftoken"]
             if len(csrf_cookies) > 1:
@@ -1612,7 +1677,8 @@ class TiDBClient:
                 "Upgrade-Insecure-Requests": "1"
             })
             
-            login_response = self.session.post(login_url, json=login_data)
+            login_response = self.session.post(login_url, json=login_data, timeout=30)
+            self._check_waf(login_response, "登录请求")
             
             if login_response.status_code != 200:
                 raise RuntimeError(f"登录失败，状态码: {login_response.status_code}")
@@ -1631,14 +1697,14 @@ class TiDBClient:
                 "Sec-Fetch-User": "?1"
             })
             
-            redirect_response = self.session.get(redirect_url, allow_redirects=False)
+            redirect_response = self.session.get(redirect_url, allow_redirects=False, timeout=30)
             if redirect_response.status_code in (301, 302, 303, 307, 308):
                 next_url = redirect_response.headers.get('Location')
                 if next_url and 'tidb.net' in next_url:
-                    self.session.get(next_url, allow_redirects=True)
+                    self.session.get(next_url, allow_redirects=True, timeout=30)
             
             member_url = "https://tidb.net/member"
-            member_response = self.session.get(member_url)
+            member_response = self.session.get(member_url, timeout=30)
             if "登录" in member_response.text and "注册" in member_response.text:
                 raise RuntimeError("登录失败，会员页面仍显示登录/注册选项")
             
@@ -1660,7 +1726,8 @@ class TiDBClient:
             try:
                 self.log("检查签到状态...")
                 status_url = "https://pingkai.cn/accounts/api/points/me"
-                resp = self.session.get(status_url)
+                resp = self.session.get(status_url, timeout=30)
+                self._check_waf(resp, "签到状态检查")
                 if resp.status_code == 200:
                     status_json = resp.json()
                     status_data = status_json.get("data", {})
@@ -1697,7 +1764,8 @@ class TiDBClient:
                 "X-CSRFTOKEN": csrf_token if csrf_token else ""
             })
             
-            checkin_response = self.session.post(checkin_url)
+            checkin_response = self.session.post(checkin_url, timeout=30)
+            self._check_waf(checkin_response, "签到请求")
             
             try:
                 checkin_json = checkin_response.json()
@@ -1781,7 +1849,41 @@ def push_plus(token, title, content):
     except:
         print("pushplus推送异常")
 
-def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, tidb_clients, push_token):
+def parse_interval(value, default=(30, 90)):
+    """解析账号间隔配置：支持数字(秒)、'a-b'/'a~b' 范围字符串、[a, b] 列表"""
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return (int(value), int(value))
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (int(value[0]), int(value[1]))
+    text = str(value).strip()
+    m = re.match(r"^(\d+)\s*[-~]\s*(\d+)$", text)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    if text.isdigit():
+        return (int(text), int(text))
+    return default
+
+def wait_between_accounts(name, rng, is_last):
+    if is_last:
+        return
+    lo, hi = rng
+    if hi <= 0:
+        return
+    wait = random.randint(max(0, lo), hi)
+    if wait > 0:
+        print(f"[{fmt_now()}] {name} 账号间随机等待 {wait} 秒...")
+        time.sleep(wait)
+
+def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, modb_clients, gbase_clients, tidb_clients, push_token, intervals=None):
+    intervals = intervals or {}
+    kb_rng = parse_interval(intervals.get("kingbase"))
+    ob_rng = parse_interval(intervals.get("oceanbase"))
+    pgfans_rng = parse_interval(intervals.get("pgfans"))
+    modb_rng = parse_interval(intervals.get("modb"))
+    gbase_rng = parse_interval(intervals.get("gbase"))
+    tidb_rng = parse_interval(intervals.get("tidb"))
     # 初始化结果变量
     kb_results = []
     oceanbase_results = []
@@ -1814,10 +1916,7 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
         else:
             kb_results.append(f"✅ 第{kb_idx}个账号：回帖成功 {success_count} 次，失败 {fail_count} 次")
         
-        if kb_idx < len(kingbase_clients):
-            account_wait = random.randint(30, 90)
-            print(f"[{fmt_now()}] 账号间随机等待 {account_wait} 秒...")
-            time.sleep(account_wait)
+        wait_between_accounts("Kingbase", kb_rng, kb_idx == len(kingbase_clients))
 
     # OceanBase 签到
     oceanbase_results = []
@@ -1837,6 +1936,7 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
                 log_msg = f"[{fmt_now()}] [失败] OceanBase 第{idx}个账号签到失败：{e}"
                 print(log_msg)
                 oceanbase_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+            wait_between_accounts("OceanBase", ob_rng, idx == len(oceanbase_clients))
     else:
         print(f"\n[{fmt_now()}] === 跳过 OceanBase 签到（未配置） ===\n")
         oceanbase_results.append("⚠️ OceanBase 未配置，跳过签到")
@@ -1860,6 +1960,7 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
                 log_msg = f"[{fmt_now()}] [失败] PGFans 第{idx}个账号签到失败：{e}"
                 print(log_msg)
                 pgfans_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+            wait_between_accounts("PGFans", pgfans_rng, idx == len(pgfans_clients))
     else:
         print(f"\n[{fmt_now()}] === 跳过 PGFans 签到（未配置） ===\n")
         pgfans_results.append("⚠️ PGFans 未配置，跳过签到")
@@ -1889,6 +1990,7 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
                 log_msg = f"[{fmt_now()}] [失败] MoDB 第{idx}个账号签到失败：{e}"
                 print(log_msg)
                 modb_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+            wait_between_accounts("MoDB", modb_rng, idx == len(modb_clients))
     else:
         print(f"\n[{fmt_now()}] === 跳过 MoDB 签到（未配置） ===\n")
         modb_results.append("⚠️ MoDB 未配置，跳过签到")
@@ -1918,6 +2020,7 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
                 log_msg = f"[{fmt_now()}] [失败] GBase 第{idx}个账号签到失败：{e}"
                 print(log_msg)
                 gbase_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+            wait_between_accounts("GBase", gbase_rng, idx == len(gbase_clients))
     else:
         print(f"\n[{fmt_now()}] === 跳过 GBase 签到（未配置） ===\n")
         gbase_results.append("⚠️ GBase 未配置，跳过签到")
@@ -1950,6 +2053,7 @@ def run_one_day(kingbase_clients, kb_times, oceanbase_clients, pgfans_clients, m
                 log_msg = f"[{fmt_now()}] [失败] TiDB 第{idx}个账号签到失败：{e}"
                 print(log_msg)
                 tidb_results.append(f"❌ 第{idx}个账号：签到失败 - {str(e)}")
+            wait_between_accounts("TiDB", tidb_rng, idx == len(tidb_clients))
     else:
         print(f"\n[{fmt_now()}] === 跳过 TiDB 签到（未配置） ===\n")
         tidb_results.append("⚠️ TiDB 未配置，跳过签到")
