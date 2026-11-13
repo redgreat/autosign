@@ -39,6 +39,6 @@ RUN if [ -f /app/conf/config.yml ]; then cp /app/conf/config.yml /app/config.yml
 COPY docker/supervisord.conf /etc/supervisor/supervisord.conf
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep -f "python.*all_checkin.py" || exit 1
+    CMD cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\0' ' ' | grep -q 'all_checki[n]' || exit 1
 
 CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
